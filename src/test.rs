@@ -6,9 +6,7 @@ use cpal::{Sample, SampleFormat};
 use crate::blerp;
 
 fn soine() -> Vec<f64> {
-    (0..44100)
-        .map(|i| ((2.0 * std::f64::consts::PI) * (440.0 * f64::from(i)) / 44100.0).sin())
-        .collect()
+    (0..44100).map(|i| ((2.0 * std::f64::consts::PI) * (440.0 * f64::from(i)) / 44100.0).sin()).collect()
 }
 
 fn soiniet(i: i32) -> f64 {
@@ -19,9 +17,7 @@ pub fn test() {
     std::thread::spawn(|| {
         let (_stream, stream_handle) = OutputStream::try_default().unwrap();
         let source: Vec<f32> = blerp::f64_size_to_f32(&soine());
-        stream_handle
-            .play_raw(SamplesBuffer::new(1, 44100, source))
-            .unwrap();
+        stream_handle.play_raw(SamplesBuffer::new(1, 44100, source)).unwrap();
 
         std::thread::sleep(std::time::Duration::from_secs(5));
     });
@@ -52,43 +48,20 @@ fn write_silence<T: Sample>(data: &mut [T], _: &cpal::OutputCallbackInfo) {
 pub fn cpaltest() {
     let err_fn = |err| eprintln!("an error occurred on the output audio stream: {err}");
     let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .expect("no output device available");
-    let mut supported_configs_range = device
-        .supported_output_configs()
-        .expect("error while querying configs");
-    let supported_config = supported_configs_range
-        .next()
-        .expect("no supported config?!")
-        .with_max_sample_rate();
+    let device = host.default_output_device().expect("no output device available");
+    let mut supported_configs_range = device.supported_output_configs().expect("error while querying configs");
+    let supported_config = supported_configs_range.next().expect("no supported config?!").with_max_sample_rate();
     let sample_format = supported_config.sample_format();
     let config = supported_config.into();
     let stream = match sample_format {
-        SampleFormat::F64 => {
-            device.build_output_stream(&config, write_silence::<f64>, err_fn, None)
-        }
-        SampleFormat::I64 => {
-            device.build_output_stream(&config, write_silence::<i64>, err_fn, None)
-        }
-        SampleFormat::U64 => {
-            device.build_output_stream(&config, write_silence::<u64>, err_fn, None)
-        }
-        SampleFormat::F32 => {
-            device.build_output_stream(&config, write_silence::<f32>, err_fn, None)
-        }
-        SampleFormat::I32 => {
-            device.build_output_stream(&config, write_silence::<i32>, err_fn, None)
-        }
-        SampleFormat::U32 => {
-            device.build_output_stream(&config, write_silence::<u32>, err_fn, None)
-        }
-        SampleFormat::I16 => {
-            device.build_output_stream(&config, write_silence::<i16>, err_fn, None)
-        }
-        SampleFormat::U16 => {
-            device.build_output_stream(&config, write_silence::<u16>, err_fn, None)
-        }
+        SampleFormat::F64 => device.build_output_stream(&config, write_silence::<f64>, err_fn, None),
+        SampleFormat::I64 => device.build_output_stream(&config, write_silence::<i64>, err_fn, None),
+        SampleFormat::U64 => device.build_output_stream(&config, write_silence::<u64>, err_fn, None),
+        SampleFormat::F32 => device.build_output_stream(&config, write_silence::<f32>, err_fn, None),
+        SampleFormat::I32 => device.build_output_stream(&config, write_silence::<i32>, err_fn, None),
+        SampleFormat::U32 => device.build_output_stream(&config, write_silence::<u32>, err_fn, None),
+        SampleFormat::I16 => device.build_output_stream(&config, write_silence::<i16>, err_fn, None),
+        SampleFormat::U16 => device.build_output_stream(&config, write_silence::<u16>, err_fn, None),
         SampleFormat::I8 => device.build_output_stream(&config, write_silence::<i8>, err_fn, None),
         SampleFormat::U8 => device.build_output_stream(&config, write_silence::<u8>, err_fn, None),
         sample_format => panic!("Unsupported sample format '{sample_format}'"),

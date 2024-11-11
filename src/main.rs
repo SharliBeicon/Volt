@@ -1,14 +1,7 @@
 use eframe::{egui, run_native, App, CreationContext, NativeOptions};
-use egui::{
-    Align2, CentralPanel, Color32, Context, FontData, FontDefinitions, FontFamily, FontId, Pos2,
-    Rect,
-};
+use egui::{CentralPanel, Context, FontData, FontDefinitions, FontFamily, Pos2, Rect, SidePanel, TopBottomPanel};
 use egui_extras::install_image_loaders;
-use std::{
-    collections::HashSet,
-    path::PathBuf,
-    str::FromStr,
-};
+use std::{collections::HashSet, path::PathBuf, str::FromStr};
 mod blerp;
 mod test;
 // TODO: Move everything into components (visual)
@@ -36,11 +29,7 @@ fn main() -> eframe::Result {
         },
         ..Default::default()
     };
-    run_native(
-        title,
-        native_options,
-        Box::new(|cc| Ok(Box::new(VoltApp::new(cc)))),
-    )
+    run_native(title, native_options, Box::new(|cc| Ok(Box::new(VoltApp::new(cc)))))
 }
 
 struct VoltApp {
@@ -52,16 +41,10 @@ impl VoltApp {
     fn new(cc: &CreationContext<'_>) -> Self {
         install_image_loaders(&cc.egui_ctx);
         let mut fonts = FontDefinitions::default();
-        fonts.font_data.insert(
-            "IBMPlexMono".to_owned(),
-            FontData::from_static(include_bytes!(
-                "fonts/ibm-plex-mono/IBMPlexMono-Regular.ttf"
-            )),
-        );
-        fonts.families.insert(
-            FontFamily::Name("IBMPlexMono".into()),
-            vec!["IBMPlexMono".to_owned()],
-        );
+        fonts
+            .font_data
+            .insert("IBMPlexMono".to_owned(), FontData::from_static(include_bytes!("fonts/ibm-plex-mono/IBMPlexMono-Regular.ttf")));
+        fonts.families.insert(FontFamily::Name("IBMPlexMono".into()), vec!["IBMPlexMono".to_owned()]);
         cc.egui_ctx.set_fonts(fonts);
         Self {
             browser: Browser {
@@ -76,8 +59,6 @@ impl VoltApp {
                 offset_y: 0.,
                 dragging_audio: false,
                 dragging_audio_text: String::new(),
-                sidebar_width: 300.,
-                started_drag: false,
             },
             themes: ThemeColors::default(),
         }
@@ -86,23 +67,21 @@ impl VoltApp {
 
 impl App for VoltApp {
     fn update(&mut self, ctx: &Context, _: &mut eframe::Frame) {
-        CentralPanel::default()
-            .frame(egui::Frame::none())
-            .show(ctx, |ui| {
-                let viewport: Rect = ctx
-                    .input(|input_state| input_state.viewport().inner_rect)
-                    .unwrap_or_else(|| {
-                        let size = ctx.screen_rect().size();
-                        Rect::from_min_size(Pos2::ZERO, size)
-                    });
-
-                visual::background::paint_background(ui, &viewport, &self.themes);
-
-                visual::navbar::paint_navbar(ui, &viewport, &self.themes);
-
-                self.browser.paint(ctx, ui, &viewport, &self.themes);
-            });
+        let viewport = ctx.input(|input_state| input_state.viewport().inner_rect).unwrap_or_else(|| {
+            let size = ctx.screen_rect().size();
+            Rect::from_min_size(Pos2::ZERO, size)
+        });
+        TopBottomPanel::top("navbar").show(ctx, |ui| {
+            visual::navbar::paint_navbar(ui, &viewport, &self.themes);
+        });
+        SidePanel::left("sidebar").default_width(300.).frame(egui::Frame::default().fill(self.themes.browser)).show(ctx, |ui| {
+            self.browser.paint(ctx, ui, &ui.clip_rect(), &self.themes);
+        });
+        CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+            visual::background::paint_background(ui, &viewport, &self.themes);
+        });
     }
+
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         // Log the exit
         println!("Volt is exiting!");

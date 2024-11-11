@@ -5,13 +5,7 @@ pub enum WaveAudioFormat {
     FloatingPoint,
 }
 
-pub fn form_wav_file_header(
-    sample_rate: u32,
-    channels: u16,
-    bits_per_sample: u16,
-    sample_length: u32,
-    audio_format: WaveAudioFormat,
-) -> io::Result<Vec<u8>> {
+pub fn form_wav_file_header(sample_rate: u32, channels: u16, bits_per_sample: u16, sample_length: u32, audio_format: WaveAudioFormat) -> io::Result<Vec<u8>> {
     let file_length: u32 = sample_length * (u32::from(bits_per_sample) / 8) + 44;
     let format_data_length: u32 = 16;
     let byte_rate: u32 = sample_rate * u32::from(channels) * u32::from(bits_per_sample) / 8;
@@ -59,11 +53,7 @@ pub fn form_wav_file_data_f64(buffer: &[f64], header_buffer: Vec<u8>) -> io::Res
 pub fn form_wav_file_data_f32tof64(buffer: &[f32], header_buffer: Vec<u8>) -> io::Result<Vec<u8>> {
     let mut filebuf = header_buffer;
 
-    filebuf.extend(
-        buffer
-            .iter()
-            .flat_map(|value| f64::from(*value).to_le_bytes()),
-    );
+    filebuf.extend(buffer.iter().flat_map(|value| f64::from(*value).to_le_bytes()));
 
     Ok(filebuf)
 }
@@ -71,11 +61,7 @@ pub fn form_wav_file_data_f32tof64(buffer: &[f32], header_buffer: Vec<u8>) -> io
 pub fn form_wav_file_data_f64tof32(buffer: &[f64], header_buffer: Vec<u8>) -> io::Result<Vec<u8>> {
     let mut filebuf = header_buffer;
 
-    filebuf.extend(
-        buffer
-            .iter()
-            .flat_map(|value| (*value as f32).to_le_bytes()),
-    );
+    filebuf.extend(buffer.iter().flat_map(|value| (*value as f32).to_le_bytes()));
 
     Ok(filebuf)
 }
@@ -83,11 +69,7 @@ pub fn form_wav_file_data_f64tof32(buffer: &[f64], header_buffer: Vec<u8>) -> io
 pub fn form_wav_file_data_f32toi16(buffer: &[f32], header_buffer: Vec<u8>) -> io::Result<Vec<u8>> {
     let mut filebuf = header_buffer;
 
-    filebuf.extend(
-        buffer
-            .iter()
-            .flat_map(|value| ((value * 32767.0) as i16).to_le_bytes()),
-    );
+    filebuf.extend(buffer.iter().flat_map(|value| ((value * 32767.0) as i16).to_le_bytes()));
 
     Ok(filebuf)
 }
@@ -95,11 +77,7 @@ pub fn form_wav_file_data_f32toi16(buffer: &[f32], header_buffer: Vec<u8>) -> io
 pub fn form_wav_file_data_f64toi16(buffer: &[f64], header_buffer: Vec<u8>) -> io::Result<Vec<u8>> {
     let mut filebuf = header_buffer;
 
-    filebuf.extend(
-        buffer
-            .iter()
-            .flat_map(|value| ((value * 32767.0) as i16).to_le_bytes()),
-    );
+    filebuf.extend(buffer.iter().flat_map(|value| ((value * 32767.0) as i16).to_le_bytes()));
 
     Ok(filebuf)
 }
@@ -107,11 +85,7 @@ pub fn form_wav_file_data_f64toi16(buffer: &[f64], header_buffer: Vec<u8>) -> io
 pub fn form_wav_file_data_f32toi8(buffer: &[f32], header_buffer: Vec<u8>) -> io::Result<Vec<u8>> {
     let mut filebuf = header_buffer;
 
-    filebuf.extend(
-        buffer
-            .iter()
-            .flat_map(|value| ((value * 127.0) as i8).to_le_bytes()),
-    );
+    filebuf.extend(buffer.iter().flat_map(|value| ((value * 127.0) as i8).to_le_bytes()));
 
     Ok(filebuf)
 }
@@ -119,11 +93,7 @@ pub fn form_wav_file_data_f32toi8(buffer: &[f32], header_buffer: Vec<u8>) -> io:
 pub fn form_wav_file_data_f64toi8(buffer: &[f64], header_buffer: Vec<u8>) -> io::Result<Vec<u8>> {
     let mut filebuf = header_buffer;
 
-    filebuf.extend(
-        buffer
-            .iter()
-            .flat_map(|value| ((value * 127.0) as i8).to_le_bytes()),
-    );
+    filebuf.extend(buffer.iter().flat_map(|value| ((value * 127.0) as i8).to_le_bytes()));
 
     Ok(filebuf)
 }
@@ -131,11 +101,7 @@ pub fn form_wav_file_data_f64toi8(buffer: &[f64], header_buffer: Vec<u8>) -> io:
 pub fn form_wav_file_data_f32toi32(buffer: &[f32], header_buffer: Vec<u8>) -> io::Result<Vec<u8>> {
     let mut filebuf = header_buffer;
 
-    filebuf.extend(
-        buffer
-            .iter()
-            .flat_map(|value| ((value * 2_147_483_647.0) as i32).to_le_bytes()),
-    );
+    filebuf.extend(buffer.iter().flat_map(|value| ((value * 2_147_483_647.0) as i32).to_le_bytes()));
 
     Ok(filebuf)
 }
@@ -143,11 +109,7 @@ pub fn form_wav_file_data_f32toi32(buffer: &[f32], header_buffer: Vec<u8>) -> io
 pub fn form_wav_file_data_f64toi32(buffer: &[f64], header_buffer: Vec<u8>) -> io::Result<Vec<u8>> {
     let mut filebuf = header_buffer;
 
-    filebuf.extend(
-        buffer
-            .iter()
-            .flat_map(|value| ((value * 2_147_483_647.0) as i32).to_le_bytes()),
-    );
+    filebuf.extend(buffer.iter().flat_map(|value| ((value * 2_147_483_647.0) as i32).to_le_bytes()));
 
     Ok(filebuf)
 }
@@ -155,11 +117,7 @@ pub fn form_wav_file_data_f64toi32(buffer: &[f64], header_buffer: Vec<u8>) -> io
 pub fn form_wav_file_data_f32toi64(buffer: &[f32], header_buffer: Vec<u8>) -> io::Result<Vec<u8>> {
     let mut filebuf = header_buffer;
 
-    filebuf.extend(
-        buffer
-            .iter()
-            .flat_map(|value| ((value * 9_223_372_036_854_776_000.0) as i64).to_le_bytes()),
-    );
+    filebuf.extend(buffer.iter().flat_map(|value| ((value * 9_223_372_036_854_776_000.0) as i64).to_le_bytes()));
 
     Ok(filebuf)
 }
@@ -167,38 +125,16 @@ pub fn form_wav_file_data_f32toi64(buffer: &[f32], header_buffer: Vec<u8>) -> io
 pub fn form_wav_file_data_f64toi64(buffer: &[f64], header_buffer: Vec<u8>) -> io::Result<Vec<u8>> {
     let mut filebuf = header_buffer;
 
-    filebuf.extend(
-        buffer
-            .iter()
-            .flat_map(|value| ((value * 9_223_372_036_854_776_000.0) as i64).to_le_bytes()),
-    );
+    filebuf.extend(buffer.iter().flat_map(|value| ((value * 9_223_372_036_854_776_000.0) as i64).to_le_bytes()));
 
     Ok(filebuf)
 }
 
-pub fn write_wav_file_f64(
-    location: &Path,
-    buffer: &[f64],
-    sample_rate: u32,
-    channels: u16,
-    bits_per_sample: u16,
-    sample_length: u32,
-    audio_format: WaveAudioFormat,
-) -> io::Result<()> {
-    let mut file = File::options()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(location)?;
+pub fn write_wav_file_f64(location: &Path, buffer: &[f64], sample_rate: u32, channels: u16, bits_per_sample: u16, sample_length: u32, audio_format: WaveAudioFormat) -> io::Result<()> {
+    let mut file = File::options().write(true).create(true).truncate(true).open(location)?;
     match audio_format {
         WaveAudioFormat::PulseCodeModulation => {
-            let filebuf: Vec<u8> = form_wav_file_header(
-                sample_rate,
-                channels,
-                bits_per_sample,
-                sample_length,
-                audio_format,
-            )?;
+            let filebuf: Vec<u8> = form_wav_file_header(sample_rate, channels, bits_per_sample, sample_length, audio_format)?;
             let _bmatch: std::result::Result<(), &str> = match bits_per_sample {
                 8 => {
                     let filebuf = form_wav_file_data_f64toi8(buffer, filebuf)?;
@@ -224,13 +160,7 @@ pub fn write_wav_file_f64(
             };
         }
         WaveAudioFormat::FloatingPoint => {
-            let filebuf: Vec<u8> = form_wav_file_header(
-                sample_rate,
-                channels,
-                bits_per_sample,
-                sample_length,
-                audio_format,
-            )?;
+            let filebuf: Vec<u8> = form_wav_file_header(sample_rate, channels, bits_per_sample, sample_length, audio_format)?;
             let _bmatch: std::result::Result<(), &str> = match bits_per_sample {
                 32 => {
                     let filebuf = form_wav_file_data_f64tof32(buffer, filebuf)?;
@@ -249,29 +179,11 @@ pub fn write_wav_file_f64(
     Ok(())
 }
 
-pub fn write_wav_file_f32(
-    location: &Path,
-    buffer: &[f32],
-    sample_rate: u32,
-    channels: u16,
-    bits_per_sample: u16,
-    sample_length: u32,
-    audio_format: WaveAudioFormat,
-) -> io::Result<()> {
-    let mut file = File::options()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(location)?;
+pub fn write_wav_file_f32(location: &Path, buffer: &[f32], sample_rate: u32, channels: u16, bits_per_sample: u16, sample_length: u32, audio_format: WaveAudioFormat) -> io::Result<()> {
+    let mut file = File::options().write(true).create(true).truncate(true).open(location)?;
     match audio_format {
         WaveAudioFormat::PulseCodeModulation => {
-            let filebuf: Vec<u8> = form_wav_file_header(
-                sample_rate,
-                channels,
-                bits_per_sample,
-                sample_length,
-                audio_format,
-            )?;
+            let filebuf: Vec<u8> = form_wav_file_header(sample_rate, channels, bits_per_sample, sample_length, audio_format)?;
             let _bmatch: std::result::Result<(), &str> = match bits_per_sample {
                 8 => {
                     let filebuf = form_wav_file_data_f32toi8(buffer, filebuf)?;
@@ -297,13 +209,7 @@ pub fn write_wav_file_f32(
             };
         }
         WaveAudioFormat::FloatingPoint => {
-            let filebuf: Vec<u8> = form_wav_file_header(
-                sample_rate,
-                channels,
-                bits_per_sample,
-                sample_length,
-                audio_format,
-            )?;
+            let filebuf: Vec<u8> = form_wav_file_header(sample_rate, channels, bits_per_sample, sample_length, audio_format)?;
             let _bmatch: std::result::Result<(), &str> = match bits_per_sample {
                 32 => {
                     let filebuf = form_wav_file_data_f32(buffer, filebuf)?;
