@@ -1,5 +1,5 @@
 use eframe::{egui, run_native, App, CreationContext, NativeOptions};
-use egui::{CentralPanel, Context, FontData, FontDefinitions, FontFamily, Pos2, Rect, SidePanel, TopBottomPanel};
+use egui::{CentralPanel, Color32, Context, FontData, FontDefinitions, FontFamily, SidePanel, TopBottomPanel};
 use egui_extras::install_image_loaders;
 use std::{collections::HashSet, path::PathBuf, str::FromStr};
 mod blerp;
@@ -67,19 +67,18 @@ impl VoltApp {
 
 impl App for VoltApp {
     fn update(&mut self, ctx: &Context, _: &mut eframe::Frame) {
-        let viewport = ctx.input(|input_state| input_state.viewport().inner_rect).unwrap_or_else(|| {
-            let size = ctx.screen_rect().size();
-            Rect::from_min_size(Pos2::ZERO, size)
-        });
-        TopBottomPanel::top("navbar").show(ctx, |ui| {
-            visual::navbar::paint_navbar(ui, &viewport, &self.themes);
+        TopBottomPanel::top("navbar").frame(egui::Frame::default().fill(self.themes.navbar)).show(ctx, |ui| {
+            visual::navbar::paint_navbar(ui);
         });
         SidePanel::left("sidebar").default_width(300.).frame(egui::Frame::default().fill(self.themes.browser)).show(ctx, |ui| {
             self.browser.paint(ctx, ui, &ui.clip_rect(), &self.themes);
         });
-        CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
-            visual::background::paint_background(ui, &viewport, &self.themes);
-        });
+        CentralPanel::default()
+            .frame(egui::Frame::none())
+            .frame(egui::Frame::default().fill(Color32::from_hex("#1e222f").unwrap_or_default()))
+            .show(ctx, |ui| {
+                visual::main::paint_main(ui, &self.themes);
+            });
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

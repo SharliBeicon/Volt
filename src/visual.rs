@@ -1,7 +1,7 @@
 use egui::Color32;
 
 // Expose components
-pub mod background;
+pub mod main;
 pub mod navbar;
 pub mod switch;
 
