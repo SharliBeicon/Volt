@@ -1,7 +1,7 @@
 use eframe::{egui, run_native, App, CreationContext, NativeOptions};
 use egui::{CentralPanel, Color32, Context, FontData, FontDefinitions, FontFamily, SidePanel, TopBottomPanel};
 use egui_extras::install_image_loaders;
-use std::{collections::HashSet, path::PathBuf, str::FromStr};
+use std::{path::PathBuf, str::FromStr};
 mod blerp;
 mod test;
 // TODO: Move everything into components (visual)
@@ -9,7 +9,7 @@ mod browser;
 mod info;
 mod visual;
 
-use browser::{Browser, Category, OpenFolder};
+use browser::{Browser, Category};
 use visual::ThemeColors;
 
 fn main() -> eframe::Result {
@@ -50,9 +50,7 @@ impl VoltApp {
             browser: Browser {
                 selected_category: Category::Files,
                 other_category_hovered: false,
-                open_folders: vec![OpenFolder {
-                    path: PathBuf::from_str("/").unwrap(),
-                }],
+                open_folders: vec![PathBuf::from_str("/").unwrap()],
                 preview: browser::Preview {
                     preview_thread: Some(std::thread::spawn(|| {})),
                 },

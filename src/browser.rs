@@ -1,22 +1,21 @@
 use itertools::Itertools;
 use open::that_detached;
 use std::{
-    cmp::Ordering,
-    collections::HashSet,
     fs::{read_dir, DirEntry, File},
     iter::Iterator,
     mem::{transmute_copy, ManuallyDrop, MaybeUninit},
-    path::PathBuf,
+    path::{Path, PathBuf},
     string::ToString,
     thread::JoinHandle,
 };
 use strum::Display;
 
-// FIXME: Temporary rodio playback, might need to use cpal or make rodio proper
 use egui::{
     include_image, vec2, Button, CollapsingHeader, CollapsingResponse, Context, CursorIcon, DroppedFile, FontFamily, FontId, Id, Image, InnerResponse, Margin, PointerButton, RichText, ScrollArea,
     Sense, Stroke, Ui, Widget,
 };
+
+// FIXME: Temporary rodio playback, might need to use cpal or make rodio proper
 use rodio::{Decoder, OutputStream, Sink};
 
 use std::io::BufReader;
@@ -62,23 +61,6 @@ pub struct Entry {
     pub path: PathBuf,
     pub kind: EntryKind,
     pub indent: usize,
-}
-
-// FIXME: THIS NEEDS TO BE FIXED ASAP, the ordering is wrong
-// Because of the new browser tree layout, the ordering no longer works as expected
-// We either need to do these comparisons within each layer of the tree, or make a more complicated ordering algorithm,
-// which would generally avoid the problem of this stuff being put into the wrong layer.
-// For now, ordering is based on path.
-impl Ord for Entry {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.path.cmp(&other.path)
-    }
-}
-
-impl PartialOrd for Entry {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
 }
 
 #[derive(Display, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -130,14 +112,10 @@ impl Preview {
     }
 }
 
-pub struct OpenFolder {
-    pub path: PathBuf,
-}
-
 pub struct Browser {
     pub selected_category: Category,
     pub other_category_hovered: bool,
-    pub open_folders: Vec<OpenFolder>,
+    pub open_folders: Vec<PathBuf>,
     pub preview: Preview,
     pub hovered_entry: Option<PathBuf>,
 }
@@ -232,16 +210,15 @@ impl Browser {
                 } = self;
                 for folder in open_folders {
                     let name = folder
-                        .path
                         .file_name()
-                        .map_or(folder.path.to_str(), |name| name.to_str())
+                        .map_or(folder.to_str(), |name| name.to_str())
                         .map(ToString::to_string)
-                        .ok_or_else(|| String::from_utf8_lossy(folder.path.file_name().unwrap().as_encoded_bytes()).to_string());
+                        .ok_or_else(|| String::from_utf8_lossy(folder.file_name().unwrap().as_encoded_bytes()).to_string());
                     let unwrapped = match &name {
                         Ok(name) | Err(name) => name,
                     }
                     .as_str();
-                    CollapsingHeader::new(unwrapped).id_salt(&folder.path).show(ui, |ui| {
+                    CollapsingHeader::new(unwrapped).id_salt(&folder).show(ui, |ui| {
                         let mut some_hovered = false;
                         Self::directory_inner(folder, ui, preview, theme, hovered_entry, &mut some_hovered);
                         if !some_hovered {
@@ -254,8 +231,8 @@ impl Browser {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn directory_inner(folder: &OpenFolder, ui: &mut Ui, preview: &mut Preview, theme: &ThemeColors, hovered_entry: &mut Option<PathBuf>, some_hovered: &mut bool) {
-        for entry in read_dir(&folder.path).unwrap().sorted_by(|a, b| {
+    fn directory_inner(folder: &Path, ui: &mut Ui, preview: &mut Preview, theme: &ThemeColors, hovered_entry: &mut Option<PathBuf>, some_hovered: &mut bool) {
+        for entry in read_dir(folder).unwrap().sorted_by(|a, b| {
             a.as_ref()
                 .ok()
                 .map(EntryKind::from)
@@ -317,7 +294,7 @@ impl Browser {
                     })
                     .id_salt(&path)
                     .show(ui, |ui| {
-                        Self::directory_inner(&OpenFolder { path: path.clone() }, ui, preview, theme, hovered_entry, some_hovered);
+                        Self::directory_inner(&path, ui, preview, theme, hovered_entry, some_hovered);
                     });
                     match body_response {
                         Some(body_response) => header_response.union(body_response),
@@ -354,7 +331,7 @@ impl Browser {
             .input(|input| input.raw.dropped_files.iter().map(move |DroppedFile { path, .. }| path.clone().ok_or(())).try_collect())
             .unwrap_or_default();
         for path in files {
-            self.open_folders.push(OpenFolder { path });
+            self.open_folders.push(path);
         }
     }
 }
