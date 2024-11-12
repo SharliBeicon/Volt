@@ -7,7 +7,6 @@ use std::{
     iter::Iterator,
     mem::{transmute_copy, ManuallyDrop, MaybeUninit},
     path::PathBuf,
-    str::FromStr,
     string::ToString,
     thread::JoinHandle,
 };
@@ -15,18 +14,14 @@ use strum::Display;
 
 // FIXME: Temporary rodio playback, might need to use cpal or make rodio proper
 use egui::{
-    include_image, vec2, Button, CollapsingHeader, CollapsingResponse, Context, CursorIcon, DroppedFile, FontFamily, FontId, Id, Image, InnerResponse, LayerId, Margin, PointerButton, Pos2, Rect,
-    RichText, ScrollArea, Sense, Stroke, Ui, Widget,
+    include_image, vec2, Button, CollapsingHeader, CollapsingResponse, Context, CursorIcon, DroppedFile, FontFamily, FontId, Id, Image, InnerResponse, Margin, PointerButton, RichText, ScrollArea,
+    Sense, Stroke, Ui, Widget,
 };
 use rodio::{Decoder, OutputStream, Sink};
 
 use std::io::BufReader;
 
 use crate::visual::ThemeColors;
-
-fn hovered(ctx: &Context, rect: &Rect) -> bool {
-    ctx.rect_contains_pointer(ctx.layer_id_at(ctx.pointer_hover_pos().unwrap_or_default()).unwrap_or_else(LayerId::background), *rect)
-}
 
 // https://veykril.github.io/tlborm/decl-macros/building-blocks/counting.html#bit-twiddling
 macro_rules! count_tts {
@@ -96,16 +91,16 @@ pub enum EntryKind {
 impl From<&DirEntry> for EntryKind {
     fn from(value: &DirEntry) -> Self {
         if value.path().is_dir() {
-            EntryKind::Directory
+            Self::Directory
         } else if value
             .path()
             .extension()
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| AUDIO_EXTENSIONS.contains(&extension))
         {
-            EntryKind::Audio
+            Self::Audio
         } else {
-            EntryKind::File
+            Self::File
         }
     }
 }
@@ -146,13 +141,10 @@ pub struct Browser {
     pub other_category_hovered: bool,
     pub open_folders: Vec<OpenFolder>,
     pub preview: Preview,
-    pub offset_y: f32,
-    pub dragging_audio: bool,
-    pub dragging_audio_text: String,
 }
 
 impl Browser {
-    pub fn paint_button<'a>(ctx: &'a Context, selected: bool, text: &'a str, theme: &'a ThemeColors, hovered: bool) -> impl Widget + use<'a> {
+    pub fn paint_button<'a>(selected: bool, text: &'a str, theme: &'a ThemeColors, hovered: bool) -> impl Widget + use<'a> {
         move |ui: &mut Ui| {
             let color = if selected {
                 theme.browser_selected_button_fg
@@ -179,11 +171,10 @@ impl Browser {
 
     #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
     pub fn paint(&mut self, ctx: &Context, ui: &mut Ui, theme: &ThemeColors) {
-        let viewport = ui.clip_rect();
         let (was_pressed, press_position) = ctx
             .input(|input_state| Some((input_state.pointer.button_released(PointerButton::Primary), Some(input_state.pointer.latest_pos()?))))
             .unwrap_or_default();
-        ScrollArea::vertical().show_viewport(ui, |ui, rect| {
+        ScrollArea::vertical().show_viewport(ui, |ui, _| {
             egui::Frame::none().inner_margin(Margin::same(8.)).show(ui, |ui| {
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
@@ -207,7 +198,7 @@ impl Browser {
                             for (category, ui) in zip(Category::VARIANTS, uis.each_mut()) {
                                 let selected = self.selected_category == category;
                                 let string = category.to_string();
-                                let button = Self::paint_button(ctx, selected, &string, theme, self.other_category_hovered);
+                                let button = Self::paint_button(selected, &string, theme, self.other_category_hovered);
                                 let response = ui.add(button);
                                 let rect = response.rect;
                                 if !selected {
@@ -222,7 +213,7 @@ impl Browser {
                     });
                     match self.selected_category {
                         Category::Files => {
-                            self.paint_files(ctx, viewport, ui, theme, press_position, was_pressed);
+                            self.paint_files(ctx, ui, theme);
                         }
                         Category::Devices => {
                             // TODO: Show some devices here!
@@ -233,7 +224,7 @@ impl Browser {
         });
     }
 
-    fn paint_files(&mut self, ctx: &Context, viewport: Rect, ui: &mut Ui, theme: &ThemeColors, press_position: Option<Pos2>, was_pressed: bool) {
+    fn paint_files(&mut self, ctx: &Context, ui: &mut Ui, theme: &ThemeColors) {
         self.handle_folder_drop(ctx);
         egui::Frame::default().inner_margin(Margin::same(8.)).show(ui, |ui| {
             ui.vertical(|ui| {
@@ -363,57 +354,6 @@ impl Browser {
             }
             folder.hovered_entry = response.hovered().then_some(path);
         }
-    }
-
-    // TODO: Do this DFS faster - memoise it or something instead of recalculating every frame
-    fn entries(open_folders: &mut Vec<OpenFolder>) -> Vec<(Vec<Entry>, &mut HashSet<PathBuf>, &mut Option<PathBuf>)> {
-        open_folders
-            .iter_mut()
-            .map(|open_folder| {
-                let mut stack = vec![(open_folder.path.clone(), 0)];
-                let mut discovered = HashSet::new();
-                let mut entries = Vec::new();
-                while let Some((path, indent)) = stack.pop() {
-                    entries.push((path.clone(), indent));
-                    if discovered.insert(path.clone()) {
-                        let Ok(entries) = read_dir(&path) else {
-                            continue;
-                        };
-                        for entry in entries {
-                            let entry = entry.unwrap();
-                            if open_folder
-                                .expanded_directories
-                                .contains(&PathBuf::from_str(&entry.file_name().into_string().unwrap_or_else(|_| "• Invalid Name •".into())).unwrap())
-                                || open_folder.expanded_directories.contains(&path)
-                            {
-                                stack.push((entry.path(), indent + 1));
-                            }
-                        }
-                    }
-                }
-                (
-                    entries
-                        .into_iter()
-                        .map(|(path, indent)| Entry {
-                            kind: if path.is_file() {
-                                if path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| AUDIO_EXTENSIONS.contains(&extension)) {
-                                    EntryKind::Audio
-                                } else {
-                                    EntryKind::File
-                                }
-                            } else {
-                                EntryKind::Directory
-                            },
-                            path,
-                            indent,
-                        })
-                        .sorted_unstable()
-                        .collect_vec(),
-                    &mut open_folder.expanded_directories,
-                    &mut open_folder.hovered_entry,
-                )
-            })
-            .collect_vec()
     }
 
     fn handle_folder_drop(&mut self, ctx: &Context) {

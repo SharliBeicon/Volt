@@ -58,9 +58,6 @@ impl VoltApp {
                 preview: browser::Preview {
                     preview_thread: Some(std::thread::spawn(|| {})),
                 },
-                offset_y: 0.,
-                dragging_audio: false,
-                dragging_audio_text: String::new(),
             },
             themes: ThemeColors::default(),
         }
