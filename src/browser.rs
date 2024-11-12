@@ -265,50 +265,45 @@ impl Browser {
                 .map_or(path.to_str(), |name| name.to_str())
                 .map(ToString::to_string)
                 .ok_or_else(|| String::from_utf8_lossy(path.file_name().unwrap().as_encoded_bytes()).to_string());
-            macro_rules! item {
-                () => {
-                    |ui: &mut Ui| {
-                        ui.horizontal(|ui| {
-                            ui.add(Image::new(match kind {
-                                EntryKind::Directory => {
-                                    if folder.expanded_directories.contains(&path) {
-                                        include_image!("images/icons/folder_open.png")
-                                    } else {
-                                        include_image!("images/icons/folder.png")
-                                    }
-                                }
-                                EntryKind::Audio => include_image!("images/icons/audio.png"),
-                                EntryKind::File => include_image!("images/icons/file.png"),
-                            }));
-                            ui.add(
-                                Button::new(
-                                    RichText::new(match &name {
-                                        Ok(name) | Err(name) => name,
-                                    })
-                                    .font(FontId::new(14., FontFamily::Name("IBMPlexMono".into())))
-                                    .color(match (Some(&path) == folder.hovered_entry.as_ref(), name.is_err()) {
-                                        (true, true) => theme.browser_unselected_hover_button_fg_invalid,
-                                        (true, false) => theme.browser_unselected_hover_button_fg,
-                                        (false, true) => theme.browser_unselected_button_fg_invalid,
-                                        (false, false) => theme.browser_unselected_button_fg,
-                                    }),
-                                )
-                                .frame(false),
-                            )
-                        })
-                    }
-                };
-            }
+            let button = || {
+                Button::new(
+                    RichText::new(match &name {
+                        Ok(name) | Err(name) => name,
+                    })
+                    .font(FontId::new(14., FontFamily::Name("IBMPlexMono".into())))
+                    .color(match (Some(&path) == folder.hovered_entry.as_ref(), name.is_err()) {
+                        (true, true) => theme.browser_unselected_hover_button_fg_invalid,
+                        (true, false) => theme.browser_unselected_hover_button_fg,
+                        (false, true) => theme.browser_unselected_button_fg_invalid,
+                        (false, false) => theme.browser_unselected_button_fg,
+                    }),
+                )
+                .frame(false)
+            };
             let response = match kind {
                 EntryKind::Audio => {
-                    let InnerResponse {
-                        inner: InnerResponse { inner, response: a },
-                        response: b,
-                    } = ui.dnd_drag_source(Id::new((file!(), line!(), column!())), (), item!());
-                    inner.union(a).union(b)
+                    let add_contents = |ui: &mut Ui| {
+                        ui.horizontal(|ui| {
+                            ui.add(Image::new(include_image!("images/icons/audio.png")));
+                            ui.add(button())
+                        })
+                    };
+                    if ui.input(|input| input.modifiers.command) {
+                        let InnerResponse {
+                            inner: InnerResponse { inner, response: a },
+                            response: b,
+                        } = ui.dnd_drag_source(Id::new((&path, 0)), (), add_contents);
+                        inner.union(a).union(b)
+                    } else {
+                        let InnerResponse { inner, response } = add_contents(ui);
+                        inner.union(response)
+                    }
                 }
                 EntryKind::File => {
-                    let InnerResponse { inner, response } = item!()(ui);
+                    let InnerResponse { inner, response } = ui.horizontal(|ui| {
+                        ui.add(Image::new(include_image!("images/icons/file.png")));
+                        ui.add(button())
+                    });
                     inner.union(response)
                 }
                 EntryKind::Directory => {
@@ -373,4 +368,4 @@ impl Browser {
     }
 }
 
-const AUDIO_EXTENSIONS: [&str; 6] = [".wav", ".wave", ".mp3", ".ogg", ".flac", ".opus"];
+const AUDIO_EXTENSIONS: [&str; 6] = ["wav", "wave", "mp3", "ogg", "flac", "opus"];
