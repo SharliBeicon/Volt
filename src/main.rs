@@ -49,9 +49,11 @@ impl VoltApp {
         Self {
             browser: Browser {
                 selected_category: Category::Files,
+                other_category_hovered: false,
                 open_folders: vec![OpenFolder {
                     path: PathBuf::from_str("/").unwrap(),
                     expanded_directories: HashSet::new(),
+                    hovered_entry: None,
                 }],
                 preview: browser::Preview {
                     preview_thread: Some(std::thread::spawn(|| {})),
@@ -71,7 +73,7 @@ impl App for VoltApp {
             visual::navbar::paint_navbar(ui);
         });
         SidePanel::left("sidebar").default_width(300.).frame(egui::Frame::default().fill(self.themes.browser)).show(ctx, |ui| {
-            self.browser.paint(ctx, ui, &ui.clip_rect(), &self.themes);
+            self.browser.paint(ctx, ui, &self.themes);
         });
         CentralPanel::default()
             .frame(egui::Frame::none())
