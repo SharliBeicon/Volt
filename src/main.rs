@@ -52,12 +52,11 @@ impl VoltApp {
                 other_category_hovered: false,
                 open_folders: vec![OpenFolder {
                     path: PathBuf::from_str("/").unwrap(),
-                    expanded_directories: HashSet::new(),
-                    hovered_entry: None,
                 }],
                 preview: browser::Preview {
                     preview_thread: Some(std::thread::spawn(|| {})),
                 },
+                hovered_entry: None,
             },
             themes: ThemeColors::default(),
         }

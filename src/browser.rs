@@ -132,8 +132,6 @@ impl Preview {
 
 pub struct OpenFolder {
     pub path: PathBuf,
-    pub expanded_directories: HashSet<PathBuf>,
-    pub hovered_entry: Option<PathBuf>,
 }
 
 pub struct Browser {
@@ -141,6 +139,7 @@ pub struct Browser {
     pub other_category_hovered: bool,
     pub open_folders: Vec<OpenFolder>,
     pub preview: Preview,
+    pub hovered_entry: Option<PathBuf>,
 }
 
 impl Browser {
@@ -228,7 +227,9 @@ impl Browser {
         self.handle_folder_drop(ctx);
         egui::Frame::default().inner_margin(Margin::same(8.)).show(ui, |ui| {
             ui.vertical(|ui| {
-                let Self { open_folders, preview, .. } = self;
+                let Self {
+                    open_folders, preview, hovered_entry, ..
+                } = self;
                 for folder in open_folders {
                     let name = folder
                         .path
@@ -241,7 +242,11 @@ impl Browser {
                     }
                     .as_str();
                     CollapsingHeader::new(unwrapped).id_salt(&folder.path).show(ui, |ui| {
-                        Self::directory_inner(folder, ui, preview, theme);
+                        let mut some_hovered = false;
+                        Self::directory_inner(folder, ui, preview, theme, hovered_entry, &mut some_hovered);
+                        if !some_hovered {
+                            *hovered_entry = None;
+                        }
                     });
                 }
             });
@@ -249,7 +254,7 @@ impl Browser {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn directory_inner(folder: &mut OpenFolder, ui: &mut Ui, preview: &mut Preview, theme: &ThemeColors) {
+    fn directory_inner(folder: &OpenFolder, ui: &mut Ui, preview: &mut Preview, theme: &ThemeColors, hovered_entry: &mut Option<PathBuf>, some_hovered: &mut bool) {
         for entry in read_dir(&folder.path).unwrap().sorted_by(|a, b| {
             a.as_ref()
                 .ok()
@@ -265,13 +270,13 @@ impl Browser {
                 .map_or(path.to_str(), |name| name.to_str())
                 .map(ToString::to_string)
                 .ok_or_else(|| String::from_utf8_lossy(path.file_name().unwrap().as_encoded_bytes()).to_string());
-            let button = || {
+            let button = |hovered_entry: &mut Option<PathBuf>| {
                 Button::new(
                     RichText::new(match &name {
                         Ok(name) | Err(name) => name,
                     })
                     .font(FontId::new(14., FontFamily::Name("IBMPlexMono".into())))
-                    .color(match (Some(&path) == folder.hovered_entry.as_ref(), name.is_err()) {
+                    .color(match (Some(&path) == hovered_entry.as_ref(), name.is_err()) {
                         (true, true) => theme.browser_unselected_hover_button_fg_invalid,
                         (true, false) => theme.browser_unselected_hover_button_fg,
                         (false, true) => theme.browser_unselected_button_fg_invalid,
@@ -282,10 +287,10 @@ impl Browser {
             };
             let response = match kind {
                 EntryKind::Audio => {
-                    let add_contents = |ui: &mut Ui| {
+                    let mut add_contents = |ui: &mut Ui| {
                         ui.horizontal(|ui| {
                             ui.add(Image::new(include_image!("images/icons/audio.png")));
-                            ui.add(button())
+                            ui.add(button(hovered_entry))
                         })
                     };
                     if ui.input(|input| input.modifiers.command) {
@@ -302,7 +307,7 @@ impl Browser {
                 EntryKind::File => {
                     let InnerResponse { inner, response } = ui.horizontal(|ui| {
                         ui.add(Image::new(include_image!("images/icons/file.png")));
-                        ui.add(button())
+                        ui.add(button(hovered_entry))
                     });
                     inner.union(response)
                 }
@@ -312,16 +317,7 @@ impl Browser {
                     })
                     .id_salt(&path)
                     .show(ui, |ui| {
-                        Self::directory_inner(
-                            &mut OpenFolder {
-                                path: path.clone(),
-                                expanded_directories: HashSet::new(),
-                                hovered_entry: None,
-                            },
-                            ui,
-                            preview,
-                            theme,
-                        );
+                        Self::directory_inner(&OpenFolder { path: path.clone() }, ui, preview, theme, hovered_entry, some_hovered);
                     });
                     match body_response {
                         Some(body_response) => header_response.union(body_response),
@@ -331,11 +327,6 @@ impl Browser {
             };
             if response.clicked() {
                 match kind {
-                    EntryKind::Directory => {
-                        if !folder.expanded_directories.insert(path.clone()) {
-                            folder.expanded_directories.remove(&path);
-                        }
-                    }
                     EntryKind::Audio => {
                         // TODO: Proper preview implementation with cpal. This is temporary (or at least make it work well with a proper preview widget)
                         // Also, don't spawn a new thread - instead, dedicate a thread for preview
@@ -345,9 +336,13 @@ impl Browser {
                     EntryKind::File => {
                         that_detached(path.clone()).unwrap();
                     }
+                    EntryKind::Directory => {}
                 }
             }
-            folder.hovered_entry = response.hovered().then_some(path);
+            if response.hovered() {
+                *some_hovered = true;
+                *hovered_entry = Some(path);
+            }
         }
     }
 
@@ -359,11 +354,7 @@ impl Browser {
             .input(|input| input.raw.dropped_files.iter().map(move |DroppedFile { path, .. }| path.clone().ok_or(())).try_collect())
             .unwrap_or_default();
         for path in files {
-            self.open_folders.push(OpenFolder {
-                path,
-                expanded_directories: HashSet::new(),
-                hovered_entry: None,
-            });
+            self.open_folders.push(OpenFolder { path });
         }
     }
 }
