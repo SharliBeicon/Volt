@@ -1,5 +1,5 @@
 use eframe::{egui, run_native, App, CreationContext, NativeOptions};
-use egui::{CentralPanel, CollapsingResponse, Color32, Context, FontData, FontDefinitions, FontFamily, InnerResponse, Response, SidePanel, TopBottomPanel};
+use egui::{CentralPanel, CollapsingResponse, Color32, Context, FontData, FontDefinitions, FontFamily, FontId, InnerResponse, Response, SidePanel, TextStyle, TopBottomPanel};
 use egui_extras::install_image_loaders;
 use rodio::{Decoder, OutputStream, Sink};
 use stable_try_trait_v2::Try;
@@ -41,13 +41,22 @@ struct VoltApp {
 
 impl VoltApp {
     fn new(cc: &CreationContext<'_>) -> Self {
+        const FONT_NAME: &str = "IBMPlexMono";
         install_image_loaders(&cc.egui_ctx);
         let mut fonts = FontDefinitions::default();
         fonts
             .font_data
-            .insert("IBMPlexMono".to_owned(), FontData::from_static(include_bytes!("fonts/ibm-plex-mono/IBMPlexMono-Regular.ttf")));
-        fonts.families.insert(FontFamily::Name("IBMPlexMono".into()), vec!["IBMPlexMono".to_owned()]);
+            .insert(FONT_NAME.to_string(), FontData::from_static(include_bytes!("fonts/ibm-plex-mono/IBMPlexMono-Regular.ttf")));
+        fonts.families.insert(FontFamily::Name(FONT_NAME.into()), vec![FONT_NAME.to_string()]);
         cc.egui_ctx.set_fonts(fonts);
+        cc.egui_ctx.all_styles_mut(|style| {
+            let id = FontId::new(12., FontFamily::Name(FONT_NAME.into()));
+            style.override_font_id = Some(id.clone());
+            style.text_styles = [TextStyle::Heading, TextStyle::Body, TextStyle::Button, TextStyle::Small, TextStyle::Monospace]
+                .into_iter()
+                .map(|style| (style, id.clone()))
+                .collect();
+        });
         Self {
             browser: Browser {
                 selected_category: Category::Files,
@@ -60,7 +69,9 @@ impl VoltApp {
                         let (_stream, handle) = OutputStream::try_default().unwrap();
                         let sink = Sink::try_new(&handle).unwrap();
                         loop {
-                            let path = rx.recv().unwrap();
+                            let Ok(path) = rx.recv() else {
+                                break;
+                            };
                             let source = Decoder::new(BufReader::new(File::open(path).unwrap())).unwrap();
                             sink.stop();
                             sink.append(source);
@@ -123,6 +134,16 @@ impl<R: ResponseFlatten> ResponseFlatten for InnerResponse<R> {
     fn flatten(self) -> Response {
         let Self { inner, response } = self;
         inner.flatten().union(response)
+    }
+}
+
+impl ResponseFlatten for InnerResponse<Option<Response>> {
+    fn flatten(self) -> Response {
+        let Self { inner, response } = self;
+        match inner {
+            Some(inner) => inner.union(response),
+            None => response,
+        }
     }
 }
 

@@ -10,9 +10,7 @@ use std::{
 };
 use strum::Display;
 
-use egui::{
-    include_image, vec2, Button, CollapsingHeader, Context, CursorIcon, DroppedFile, FontFamily, FontId, Id, Image, Margin, PointerButton, Response, RichText, ScrollArea, Sense, Stroke, Ui, Widget,
-};
+use egui::{include_image, vec2, Button, CollapsingHeader, Context, CursorIcon, DroppedFile, Id, Image, Margin, PointerButton, Response, RichText, ScrollArea, Sense, Stroke, Ui, Widget};
 
 use crate::{visual::ThemeColors, ResponseFlatten, TryResponseFlatten};
 
@@ -110,11 +108,7 @@ impl Browser {
                 theme.browser_unselected_button_fg
             };
             ui.allocate_ui(vec2(0., 24.), |ui| {
-                let response = ui.centered_and_justified(|ui| {
-                    Button::new(RichText::new(text).font(FontId::new(14.0, FontFamily::Name("IBMPlexMono".into()))).color(color))
-                        .frame(false)
-                        .ui(ui)
-                });
+                let response = ui.centered_and_justified(|ui| Button::new(RichText::new(text).size(14.).color(color)).frame(false).ui(ui));
                 response.flatten().union({
                     let (response, painter) = ui.allocate_painter(vec2(0., 0.5), Sense::hover());
                     painter.hline(response.rect.x_range(), response.rect.bottom(), Stroke::new(0.5, color));
@@ -221,13 +215,12 @@ impl Browser {
                             })
                         })
                         .try_flatten()
-                        .unwrap()
                 })
             })
             .flatten()
     }
 
-    fn add_directory_contents(folder: &Path, ui: &mut Ui, preview: &mut Preview, theme: &ThemeColors, hovered_entry: &mut Option<PathBuf>, some_hovered: &mut bool) -> Response {
+    fn add_directory_contents(folder: &Path, ui: &mut Ui, preview: &mut Preview, theme: &ThemeColors, hovered_entry: &mut Option<PathBuf>, some_hovered: &mut bool) -> Option<Response> {
         read_dir(folder)
             .unwrap()
             .sorted_by(|a, b| {
@@ -251,7 +244,6 @@ impl Browser {
                         RichText::new(match &name {
                             Ok(name) | Err(name) => name,
                         })
-                        .font(FontId::new(14., FontFamily::Name("IBMPlexMono".into())))
                         .color(match (Some(&path) == hovered_entry.as_ref(), name.is_err()) {
                             (true, true) => theme.browser_unselected_hover_button_fg_invalid,
                             (true, false) => theme.browser_unselected_hover_button_fg,
@@ -310,7 +302,6 @@ impl Browser {
                 response
             })
             .try_flatten()
-            .unwrap()
     }
 
     fn handle_folder_drop(&mut self, ctx: &Context) {
