@@ -89,7 +89,7 @@ impl VoltApp {
                             last_path = Some(path.clone());
                         }
                     });
-                    Preview { path_tx, file_data_rx, path: None }
+                    Preview { path_tx, file_data_rx, path: None, file_data: None }
                 },
                 hovered_entry: None,
             },
@@ -100,6 +100,7 @@ impl VoltApp {
 
 impl App for VoltApp {
     fn update(&mut self, ctx: &Context, _: &mut eframe::Frame) {
+        ctx.request_repaint();
         TopBottomPanel::top("navbar").frame(egui::Frame::default().fill(self.themes.navbar)).show(ctx, |ui| {
             ui.add(navbar());
         });

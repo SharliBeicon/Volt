@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 use strum::Display;
+use tap::Pipe;
 
 use egui::{include_image, vec2, Button, CollapsingHeader, Context, CursorIcon, DroppedFile, Id, Image, Margin, PointerButton, Response, RichText, ScrollArea, Sense, Stroke, Ui, Widget};
 
@@ -84,6 +85,7 @@ pub struct Preview {
     pub path: Option<PathBuf>,
     pub path_tx: Sender<PathBuf>,
     pub file_data_rx: Receiver<PreviewData>,
+    pub file_data: Option<PreviewData>,
 }
 
 impl Preview {
@@ -91,8 +93,19 @@ impl Preview {
         self.path = Some(path.clone());
         self.path_tx.send(path).unwrap();
     }
+
+    pub fn data(&mut self) -> Option<PreviewData> {
+        match self.file_data_rx.try_recv() {
+            Ok(data) => {
+                self.file_data = Some(data);
+                Some(data)
+            }
+            Err(_) => self.file_data,
+        }
+    }
 }
 
+#[derive(Clone, Copy)]
 pub struct PreviewData {
     pub length: Option<Duration>,
     pub started_playing: Instant,
@@ -278,7 +291,24 @@ impl Browser {
                 };
                 let response = match kind {
                     EntryKind::Audio => {
-                        let mut add_contents = |ui: &mut Ui| ui.horizontal(|ui| ui.add(Image::new(include_image!("images/icons/audio.png"))).union(ui.add(button(hovered_entry))));
+                        let mut add_contents = |ui: &mut Ui| {
+                            ui.horizontal(|ui| {
+                                ui.add(Image::new(include_image!("images/icons/audio.png"))).union(ui.add(button(hovered_entry))).pipe(|response| {
+                                    let data = preview.data();
+                                    if let Some(data @ PreviewData { length: Some(length), .. }) = preview.path.as_ref().filter(|preview_path| preview_path == &&path).zip(data).map(|(_, data)| data) {
+                                        response.union(ui.label(format!(
+                                            "{:>02}:{:>02} of {:>02}:{:>02}",
+                                            data.progress().as_secs() / 60,
+                                            data.progress().as_secs() % 60,
+                                            length.as_secs() / 60,
+                                            length.as_secs() % 60
+                                        )))
+                                    } else {
+                                        response
+                                    }
+                                })
+                            })
+                        };
                         if ui.input(|input| input.modifiers.command) {
                             ui.dnd_drag_source(Id::new((&path, 0)), (), add_contents).flatten()
                         } else {
