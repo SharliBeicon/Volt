@@ -92,16 +92,19 @@ impl Preview {
     pub fn play_file(&mut self, path: PathBuf) {
         self.path = Some(path.clone());
         self.path_tx.send(path).unwrap();
+        self.file_data = None;
     }
 
     pub fn data(&mut self) -> Option<PreviewData> {
-        match self.file_data_rx.try_recv() {
-            Ok(data) => {
-                self.file_data = Some(data);
-                Some(data)
-            }
+        self.file_data = match self.file_data_rx.try_recv() {
+            Ok(data) => Some(data),
             Err(_) => self.file_data,
+        };
+        if self.file_data.is_some_and(|data| data.length.is_some_and(|length| data.progress() > length)) {
+            self.path = None;
+            self.file_data = None;
         }
+        self.file_data
     }
 }
 

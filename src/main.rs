@@ -75,15 +75,15 @@ impl VoltApp {
                                 break;
                             };
                             let source = Decoder::new(BufReader::new(File::open(&path).unwrap())).unwrap();
-                            file_data_tx
-                                .send(PreviewData {
-                                    length: source.total_duration(),
-                                    started_playing: Instant::now(),
-                                })
-                                .unwrap();
                             let empty = sink.empty();
                             sink.stop();
                             if last_path != Some(path.clone()) || empty {
+                                file_data_tx
+                                    .send(PreviewData {
+                                        length: source.total_duration(),
+                                        started_playing: Instant::now(),
+                                    })
+                                    .unwrap();
                                 sink.append(source);
                             }
                             last_path = Some(path.clone());
