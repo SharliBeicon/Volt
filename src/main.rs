@@ -1,9 +1,9 @@
 use eframe::{egui, run_native, App, CreationContext, NativeOptions};
 use egui::{CentralPanel, CollapsingResponse, Color32, Context, FontData, FontDefinitions, FontFamily, FontId, InnerResponse, Response, SidePanel, TextStyle, TopBottomPanel};
 use egui_extras::install_image_loaders;
-use rodio::{Decoder, OutputStream, Sink};
+use rodio::{Decoder, OutputStream, Sink, Source};
 use stable_try_trait_v2::Try;
-use std::{fs::File, io::BufReader, path::PathBuf, str::FromStr, sync::mpsc::channel, thread::spawn};
+use std::{fs::File, io::BufReader, path::PathBuf, str::FromStr, sync::mpsc::channel, thread::spawn, time::Instant};
 mod blerp;
 mod test;
 // TODO: Move everything into components (visual)
@@ -11,7 +11,7 @@ mod browser;
 mod info;
 mod visual;
 
-use browser::{Browser, Category};
+use browser::{Browser, Category, Preview, PreviewData};
 use visual::{central::central, navbar::navbar, ThemeColors};
 
 fn main() -> eframe::Result {
@@ -63,21 +63,33 @@ impl VoltApp {
                 other_category_hovered: false,
                 open_folders: vec![PathBuf::from_str("/").unwrap()],
                 preview: {
-                    let (tx, rx) = channel();
+                    let (path_tx, path_rx) = channel::<PathBuf>();
+                    let (file_data_tx, file_data_rx) = channel();
                     // FIXME: Temporary rodio playback, might need to use cpal or make rodio proper
                     spawn(move || {
                         let (_stream, handle) = OutputStream::try_default().unwrap();
                         let sink = Sink::try_new(&handle).unwrap();
+                        let mut last_path = None;
                         loop {
-                            let Ok(path) = rx.recv() else {
+                            let Ok(path) = path_rx.recv() else {
                                 break;
                             };
-                            let source = Decoder::new(BufReader::new(File::open(path).unwrap())).unwrap();
+                            let source = Decoder::new(BufReader::new(File::open(&path).unwrap())).unwrap();
+                            file_data_tx
+                                .send(PreviewData {
+                                    length: source.total_duration(),
+                                    started_playing: Instant::now(),
+                                })
+                                .unwrap();
+                            let empty = sink.empty();
                             sink.stop();
-                            sink.append(source);
+                            if last_path != Some(path.clone()) || empty {
+                                sink.append(source);
+                            }
+                            last_path = Some(path.clone());
                         }
                     });
-                    browser::Preview { tx }
+                    Preview { path_tx, file_data_rx, path: None }
                 },
                 hovered_entry: None,
             },

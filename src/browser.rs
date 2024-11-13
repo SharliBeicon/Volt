@@ -6,7 +6,8 @@ use std::{
     mem::{transmute_copy, ManuallyDrop, MaybeUninit},
     path::{Path, PathBuf},
     string::ToString,
-    sync::mpsc::Sender,
+    sync::mpsc::{Receiver, Sender},
+    time::{Duration, Instant},
 };
 use strum::Display;
 
@@ -80,12 +81,34 @@ impl From<&DirEntry> for EntryKind {
 }
 
 pub struct Preview {
-    pub tx: Sender<PathBuf>,
+    pub path: Option<PathBuf>,
+    pub path_tx: Sender<PathBuf>,
+    pub file_data_rx: Receiver<PreviewData>,
 }
 
 impl Preview {
-    pub fn play_file(&self, path: PathBuf) {
-        self.tx.send(path).unwrap();
+    pub fn play_file(&mut self, path: PathBuf) {
+        self.path = Some(path.clone());
+        self.path_tx.send(path).unwrap();
+    }
+}
+
+pub struct PreviewData {
+    pub length: Option<Duration>,
+    pub started_playing: Instant,
+}
+
+impl PreviewData {
+    fn progress(&self) -> Duration {
+        self.started_playing.elapsed()
+    }
+
+    fn remaining(&self) -> Option<Duration> {
+        self.length.map(|length| length - self.progress())
+    }
+
+    fn percentage(&self) -> Option<f32> {
+        self.length.map(|length| self.progress().as_secs_f32() / length.as_secs_f32())
     }
 }
 
@@ -255,12 +278,7 @@ impl Browser {
                 };
                 let response = match kind {
                     EntryKind::Audio => {
-                        let mut add_contents = |ui: &mut Ui| {
-                            ui.horizontal(|ui| {
-                                ui.add(Image::new(include_image!("images/icons/audio.png")));
-                                ui.add(button(hovered_entry))
-                            })
-                        };
+                        let mut add_contents = |ui: &mut Ui| ui.horizontal(|ui| ui.add(Image::new(include_image!("images/icons/audio.png"))).union(ui.add(button(hovered_entry))));
                         if ui.input(|input| input.modifiers.command) {
                             ui.dnd_drag_source(Id::new((&path, 0)), (), add_contents).flatten()
                         } else {
