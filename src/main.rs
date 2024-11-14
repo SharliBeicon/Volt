@@ -1,5 +1,5 @@
 use eframe::{egui, run_native, App, CreationContext, NativeOptions};
-use egui::{hex_color, CentralPanel, CollapsingResponse, Color32, Context, FontData, FontDefinitions, FontFamily, FontId, InnerResponse, Response, SidePanel, TextStyle, TopBottomPanel};
+use egui::{hex_color, CentralPanel, CollapsingResponse, Context, FontData, FontDefinitions, FontFamily, FontId, InnerResponse, Response, SidePanel, TextStyle, TopBottomPanel};
 use egui_extras::install_image_loaders;
 use rodio::{Decoder, OutputStream, Sink, Source};
 use stable_try_trait_v2::Try;
@@ -17,10 +17,13 @@ use visual::{central::central, navbar::navbar, ThemeColors};
 fn main() -> eframe::Result {
     info::handle();
 
-    // Panic handling
-    std::panic::set_hook(Box::new(|panic_info| {
-        info::panic_handler(panic_info);
-    }));
+    #[cfg(not(debug_assertions))]
+    {
+        // Panic handling
+        std::panic::set_hook(Box::new(|panic_info| {
+            info::panic_handler(panic_info);
+        }));
+    }
 
     let title = "Volt";
     let native_options = NativeOptions {
@@ -89,7 +92,12 @@ impl VoltApp {
                             last_path = Some(path.clone());
                         }
                     });
-                    Preview { path_tx, file_data_rx, path: None, file_data: None }
+                    Preview {
+                        path_tx,
+                        file_data_rx,
+                        path: None,
+                        file_data: None,
+                    }
                 },
                 hovered_entry: None,
             },
@@ -107,11 +115,9 @@ impl App for VoltApp {
         SidePanel::left("sidebar").default_width(300.).frame(egui::Frame::default().fill(self.themes.browser)).show(ctx, |ui| {
             ui.add(self.browser.widget(ctx, &self.themes));
         });
-        CentralPanel::default()
-            .frame(egui::Frame::default().fill(hex_color!("#1e222f")))
-            .show(ctx, |ui| {
-                ui.add(central(&self.themes));
-            });
+        CentralPanel::default().frame(egui::Frame::default().fill(hex_color!("#1e222f"))).show(ctx, |ui| {
+            ui.add(central(&self.themes));
+        });
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

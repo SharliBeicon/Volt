@@ -268,7 +268,7 @@ impl Browser {
                     .cmp(&b.as_ref().ok().map(EntryKind::from))
                     .then_with(|| a.as_ref().map(DirEntry::path).ok().cmp(&b.as_ref().map(DirEntry::path).ok()))
             })
-            .map(|entry| {
+            .filter_map(|entry| {
                 let entry = entry.unwrap();
                 let path = entry.path();
                 let kind = EntryKind::from(&entry);
@@ -291,7 +291,7 @@ impl Browser {
                     )
                     .frame(false)
                 };
-                let response = match kind {
+                let response = (match kind {
                     EntryKind::Audio => {
                         let mut add_contents = |ui: &mut Ui| {
                             ui.horizontal(|ui| {
@@ -312,14 +312,16 @@ impl Browser {
                             })
                         };
                         if ui.input(|input| input.modifiers.command) {
-                            ui.dnd_drag_source(Id::new((&path, 0)), (), add_contents).flatten()
+                            ui.dnd_drag_source(Id::new((&path, 0)), path.clone(), &mut add_contents);
+                            None
                         } else {
-                            add_contents(ui).flatten()
+                            Some(add_contents(ui).flatten())
                         }
                     }
-                    EntryKind::File => ui
-                        .horizontal(|ui| ui.add(Image::new(include_image!("images/icons/file.png"))).union(ui.add(button(hovered_entry))))
-                        .flatten(),
+                    EntryKind::File => Some(
+                        ui.horizontal(|ui| ui.add(Image::new(include_image!("images/icons/file.png"))).union(ui.add(button(hovered_entry))))
+                            .flatten(),
+                    ),
                     EntryKind::Directory => {
                         let response = CollapsingHeader::new(match &name {
                             Ok(name) | Err(name) => name,
@@ -328,10 +330,10 @@ impl Browser {
                         .show(ui, |ui| {
                             Self::add_directory_contents(&path, ui, preview, theme, hovered_entry, some_hovered);
                         });
-                        response.flatten()
+                        Some(response.flatten())
                     }
-                }
-                .on_hover_cursor(CursorIcon::PointingHand);
+                })?;
+                let response = response.on_hover_cursor(CursorIcon::PointingHand);
                 if response.clicked() {
                     match kind {
                         EntryKind::Audio => {
@@ -349,7 +351,7 @@ impl Browser {
                     *some_hovered = true;
                     *hovered_entry = Some(path);
                 }
-                response
+                Some(response)
             })
             .try_flatten()
     }
