@@ -158,7 +158,6 @@ impl Browser {
         }
     }
 
-    #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
     pub fn widget<'a>(&'a mut self, ctx: &'a Context, theme: &'a ThemeColors) -> impl Widget + use<'a> + 'a {
         move |ui: &mut Ui| {
             let (was_pressed, press_position) = ctx

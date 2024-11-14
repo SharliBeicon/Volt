@@ -1,5 +1,5 @@
 use eframe::{egui, run_native, App, CreationContext, NativeOptions};
-use egui::{CentralPanel, CollapsingResponse, Color32, Context, FontData, FontDefinitions, FontFamily, FontId, InnerResponse, Response, SidePanel, TextStyle, TopBottomPanel};
+use egui::{hex_color, CentralPanel, CollapsingResponse, Color32, Context, FontData, FontDefinitions, FontFamily, FontId, InnerResponse, Response, SidePanel, TextStyle, TopBottomPanel};
 use egui_extras::install_image_loaders;
 use rodio::{Decoder, OutputStream, Sink, Source};
 use stable_try_trait_v2::Try;
@@ -108,7 +108,7 @@ impl App for VoltApp {
             ui.add(self.browser.widget(ctx, &self.themes));
         });
         CentralPanel::default()
-            .frame(egui::Frame::default().fill(Color32::from_hex("#1e222f").unwrap_or_default()))
+            .frame(egui::Frame::default().fill(hex_color!("#1e222f")))
             .show(ctx, |ui| {
                 ui.add(central(&self.themes));
             });
