@@ -20,10 +20,3 @@ strum = { version = "0.26.3", features = ["derive"] }
 tap = "1.0.1"
 unicode-truncate = "2.0.0"
 blerp = { path = "../blerp" }
-
-[target.x86_64-unknown-linux-gnu]
-linker = "clang"
-rustflags = ["-C", "link-arg=-fuse-ld=/usr/bin/mold", "-Zshare-generics=y"]
-
-[target.x86_64-pc-windows-msvc]
-linker = "rust-lld.exe"
