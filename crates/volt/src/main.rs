@@ -4,8 +4,6 @@ use egui_extras::install_image_loaders;
 use rodio::{Decoder, OutputStream, Sink, Source};
 use stable_try_trait_v2::Try;
 use std::{fs::File, io::BufReader, path::PathBuf, str::FromStr, sync::mpsc::channel, thread::spawn, time::Instant};
-mod blerp;
-mod test;
 // TODO: Move everything into components (visual)
 mod browser;
 mod info;
