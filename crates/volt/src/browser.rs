@@ -4,9 +4,9 @@ use open::that_detached;
 use std::{
     borrow::Cow,
     fs::{read_dir, DirEntry},
-    io,
     iter::Iterator,
     mem::{transmute_copy, ManuallyDrop, MaybeUninit},
+    ops::BitOr,
     path::{Path, PathBuf},
     string::ToString,
     sync::mpsc::{Receiver, Sender},
@@ -15,9 +15,12 @@ use std::{
 use strum::Display;
 use tap::Pipe;
 
-use egui::{include_image, vec2, Button, CollapsingHeader, Context, CursorIcon, DroppedFile, Id, Image, Margin, PointerButton, Response, RichText, ScrollArea, Sense, Stroke, Ui, Widget};
+use egui::{
+    emath::TSTransform, include_image, vec2, Button, CollapsingHeader, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, LayerId, Margin, Order, PointerButton, Response, RichText, ScrollArea,
+    Sense, Stroke, Ui, Widget,
+};
 
-use crate::{visual::ThemeColors, ResponseFlatten, TryResponseFlatten};
+use crate::visual::ThemeColors;
 
 // https://veykril.github.io/tlborm/decl-macros/building-blocks/counting.html#bit-twiddling
 macro_rules! count_tts {
@@ -151,13 +154,13 @@ impl Browser {
             };
             ui.allocate_ui(vec2(0., 24.), |ui| {
                 let response = ui.centered_and_justified(|ui| Button::new(RichText::new(text).size(14.).color(color)).frame(false).ui(ui));
-                response.flatten().union({
+                response.response.union({
                     let (response, painter) = ui.allocate_painter(vec2(0., 0.5), Sense::hover());
                     painter.hline(response.rect.x_range(), response.rect.bottom(), Stroke::new(0.5, color));
                     response
                 })
             })
-            .flatten()
+            .response
         }
     }
 
@@ -210,7 +213,7 @@ impl Browser {
                                         .unwrap()
                                 })
                             })
-                            .flatten()
+                            .response
                             .union(match self.selected_category {
                                 Category::Files => self.add_files(ctx, ui, theme),
                                 Category::Devices => {
@@ -222,7 +225,7 @@ impl Browser {
                     })
                 })
                 .inner
-                .flatten()
+                .response
         }
     }
 
@@ -237,7 +240,7 @@ impl Browser {
                     } = self;
                     open_paths
                         .iter()
-                        .filter_map(|path| {
+                        .map(|path| {
                             let mut some_hovered = false;
                             let response = Self::add_entry(path, theme, hovered_entry, preview, ui, &mut some_hovered);
                             if !some_hovered {
@@ -245,13 +248,13 @@ impl Browser {
                             }
                             response
                         })
-                        .try_flatten()
+                        .reduce(Response::bitor)
                 })
             })
-            .flatten()
+            .response
     }
 
-    fn add_entry(path: &Path, theme: &ThemeColors, hovered_entry: &mut Option<PathBuf>, preview: &mut Preview, ui: &mut Ui, some_hovered: &mut bool) -> Option<Response> {
+    fn add_entry(path: &Path, theme: &ThemeColors, hovered_entry: &mut Option<PathBuf>, preview: &mut Preview, ui: &mut Ui, some_hovered: &mut bool) -> Response {
         let kind = EntryKind::from(path);
         let name = path.file_name().map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
         let button = |hovered_entry: &Option<PathBuf>| {
@@ -269,7 +272,7 @@ impl Browser {
                     ui.horizontal(|ui| {
                         ui.add(Image::new(include_image!("images/icons/audio.png"))).union(ui.add(button(hovered_entry))).pipe(|response| {
                             let data = preview.data();
-                            if let Some(data @ PreviewData { length: Some(length), .. }) = preview.path.as_ref().filter(|preview_path| preview_path == &&path).zip(data).map(|(_, data)| data) {
+                            if let Some(data @ PreviewData { length: Some(length), .. }) = preview.path.as_ref().filter(|preview_path| preview_path == &path).zip(data).map(|(_, data)| data) {
                                 response.union(ui.label(format!(
                                     "{:>02}:{:>02} of {:>02}:{:>02}",
                                     data.progress().as_secs() / 60,
@@ -283,17 +286,31 @@ impl Browser {
                         })
                     })
                 };
-                ui.dnd_drag_source(Id::new((&path, 0)), path.to_path_buf(), &mut add_contents);
-                None
+                let mut response = if ui.ctx().is_being_dragged(Id::new(path)) {
+                    DragAndDrop::set_payload(ui.ctx(), path.to_path_buf());
+                    let layer_id = LayerId::new(Order::Tooltip, Id::new(path));
+                    let response = ui.with_layer_id(layer_id, &mut add_contents).response;
+                    if let Some(pointer_pos) = ui.ctx().pointer_interact_pos() {
+                        let delta = pointer_pos - response.rect.center();
+                        ui.ctx().transform_layer_shapes(layer_id, TSTransform::from_translation(delta));
+                    }
+                    response
+                } else {
+                    let response = ui.scope(&mut add_contents).response;
+                    let dnd_response = ui.interact(response.rect, Id::new(path), Sense::click_and_drag()).on_hover_cursor(CursorIcon::Grab);
+                    dnd_response | response
+                };
+                response.layer_id = ui.layer_id();
+                response
             }
-            EntryKind::File => Some(Self::add_file(ui, button(hovered_entry))),
+            EntryKind::File => Self::add_file(ui, button(hovered_entry)),
             EntryKind::Directory => {
-                let response = CollapsingHeader::new(name).id_salt(&path).show(ui, |ui| {
-                    Self::add_directory_contents(&path, ui, preview, theme, hovered_entry, some_hovered);
+                let response = CollapsingHeader::new(name).id_salt(path).show(ui, |ui| {
+                    Self::add_directory_contents(path, ui, preview, theme, hovered_entry, some_hovered);
                 });
-                Some(response.flatten())
+                response.header_response
             }
-        }?;
+        };
         let response = response.on_hover_cursor(CursorIcon::PointingHand);
         if response.clicked() {
             match kind {
@@ -303,7 +320,7 @@ impl Browser {
                     preview.play_file(path.to_path_buf());
                 }
                 EntryKind::File => {
-                    that_detached(path.clone()).unwrap();
+                    that_detached(path).unwrap();
                 }
                 EntryKind::Directory => {}
             }
@@ -312,7 +329,7 @@ impl Browser {
             *some_hovered = true;
             *hovered_entry = Some(path.to_path_buf());
         }
-        Some(response)
+        response
     }
 
     fn add_directory_contents(folder: &Path, ui: &mut Ui, preview: &mut Preview, theme: &ThemeColors, hovered_entry: &mut Option<PathBuf>, some_hovered: &mut bool) -> Option<Response> {
@@ -325,8 +342,8 @@ impl Browser {
                     .cmp(&b.as_ref().ok().map(|entry| EntryKind::from(entry.path())))
                     .then_with(|| a.as_ref().map(DirEntry::path).ok().cmp(&b.as_ref().map(DirEntry::path).ok()))
             })
-            .filter_map(|entry| Self::add_entry(&entry.unwrap().path(), theme, hovered_entry, preview, ui, some_hovered))
-            .try_flatten()
+            .map(|entry| Self::add_entry(&entry.unwrap().path(), theme, hovered_entry, preview, ui, some_hovered))
+            .reduce(Response::bitor)
     }
 
     fn handle_file_or_folder_drop(&mut self, ctx: &Context) {
@@ -342,7 +359,7 @@ impl Browser {
     }
 
     fn add_file(ui: &mut Ui, button: Button<'_>) -> Response {
-        ui.horizontal(|ui| ui.add(Image::new(include_image!("images/icons/file.png"))).union(ui.add(button))).flatten()
+        ui.horizontal(|ui| ui.add(Image::new(include_image!("images/icons/file.png"))).union(ui.add(button))).response
     }
 }
 

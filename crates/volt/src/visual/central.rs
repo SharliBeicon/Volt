@@ -1,11 +1,11 @@
 use std::fs::File;
 use std::io::BufReader;
+use std::ops::BitOr;
 use std::path::PathBuf;
 
-use crate::ResponseFlatten;
-use crate::{visual::ThemeColors, TryResponseFlatten};
+use crate::visual::ThemeColors;
 use eframe::egui;
-use egui::{hex_color, vec2, Color32, Frame, Margin, Sense, Stroke, Ui, Vec2, Widget};
+use egui::{hex_color, vec2, Color32, Frame, Margin, Response, Sense, Stroke, Ui, Vec2, Widget};
 use rodio::{Decoder, Source};
 use tap::Tap;
 
@@ -36,11 +36,11 @@ pub fn central(theme: &ThemeColors) -> impl Widget + use<'_> {
                                     };
                                     ui.label(format!("Track {y}")).union(response)
                                 })
-                                .flatten()
+                                .response
                         })
-                        .try_flatten()
+                        .reduce(Response::bitor)
                 })
             })
-            .flatten()
+            .response
     }
 }
