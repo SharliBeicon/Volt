@@ -62,7 +62,7 @@ impl VoltApp {
             browser: Browser {
                 selected_category: Category::Files,
                 other_category_hovered: false,
-                open_folders: vec![PathBuf::from_str("/").unwrap()],
+                open_paths: vec![PathBuf::from_str("/").unwrap()],
                 preview: {
                     let (path_tx, path_rx) = channel::<PathBuf>();
                     let (file_data_tx, file_data_rx) = channel();

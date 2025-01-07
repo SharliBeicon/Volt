@@ -1,7 +1,10 @@
+#![warn(clippy::nursery, clippy::pedantic, clippy::undocumented_unsafe_blocks)]
 use itertools::Itertools;
 use open::that_detached;
 use std::{
+    borrow::Cow,
     fs::{read_dir, DirEntry},
+    io,
     iter::Iterator,
     mem::{transmute_copy, ManuallyDrop, MaybeUninit},
     path::{Path, PathBuf},
@@ -64,15 +67,15 @@ pub enum EntryKind {
     File,
 }
 
-impl From<&DirEntry> for EntryKind {
-    fn from(value: &DirEntry) -> Self {
-        if value.path().is_dir() {
+impl<P: AsRef<Path>> From<P> for EntryKind {
+    fn from(value: P) -> Self {
+        if value.as_ref().is_dir() {
             Self::Directory
         } else if value
-            .path()
+            .as_ref()
             .extension()
             .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| AUDIO_EXTENSIONS.contains(&extension))
+            .is_some_and(|extension| AUDIO_EXTENSIONS.into_iter().any(|audio_extension| audio_extension.eq_ignore_ascii_case(extension)))
         {
             Self::Audio
         } else {
@@ -131,7 +134,7 @@ impl PreviewData {
 pub struct Browser {
     pub selected_category: Category,
     pub other_category_hovered: bool,
-    pub open_folders: Vec<PathBuf>,
+    pub open_paths: Vec<PathBuf>,
     pub preview: Preview,
     pub hovered_entry: Option<PathBuf>,
 }
@@ -164,6 +167,7 @@ impl Browser {
                 .input(|input_state| Some((input_state.pointer.button_released(PointerButton::Primary), Some(input_state.pointer.latest_pos()?))))
                 .unwrap_or_default();
             ScrollArea::vertical()
+                .drag_to_scroll(false)
                 .show_viewport(ui, |ui, _| {
                     egui::Frame::default().inner_margin(Margin::same(8.)).show(ui, |ui| {
                         ui.vertical(|ui| {
@@ -223,39 +227,92 @@ impl Browser {
     }
 
     fn add_files(&mut self, ctx: &Context, ui: &mut Ui, theme: &ThemeColors) -> Response {
-        self.handle_folder_drop(ctx);
+        self.handle_file_or_folder_drop(ctx);
         egui::Frame::default()
             .inner_margin(Margin::same(8.))
             .show(ui, |ui| {
                 ui.vertical(|ui| {
                     let Self {
-                        open_folders, preview, hovered_entry, ..
+                        open_paths, preview, hovered_entry, ..
                     } = self;
-                    open_folders
+                    open_paths
                         .iter()
-                        .map(|folder| {
-                            let name = folder
-                                .file_name()
-                                .map_or(folder.to_str(), |name| name.to_str())
-                                .map(ToString::to_string)
-                                .ok_or_else(|| String::from_utf8_lossy(folder.file_name().unwrap().as_encoded_bytes()).to_string());
-                            let unwrapped = match &name {
-                                Ok(name) | Err(name) => name,
+                        .filter_map(|path| {
+                            let mut some_hovered = false;
+                            let response = Self::add_entry(path, theme, hovered_entry, preview, ui, &mut some_hovered);
+                            if !some_hovered {
+                                *hovered_entry = None;
                             }
-                            .as_str();
-                            CollapsingHeader::new(unwrapped).id_salt(folder).show(ui, |ui| {
-                                let mut some_hovered = false;
-                                let response = Self::add_directory_contents(folder, ui, preview, theme, hovered_entry, &mut some_hovered);
-                                if !some_hovered {
-                                    *hovered_entry = None;
-                                }
-                                response
-                            })
+                            response
                         })
                         .try_flatten()
                 })
             })
             .flatten()
+    }
+
+    fn add_entry(path: &Path, theme: &ThemeColors, hovered_entry: &mut Option<PathBuf>, preview: &mut Preview, ui: &mut Ui, some_hovered: &mut bool) -> Option<Response> {
+        let kind = EntryKind::from(path);
+        let name = path.file_name().map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
+        let button = |hovered_entry: &Option<PathBuf>| {
+            Button::new(RichText::new(&*name).color(match (Some(path) == hovered_entry.as_deref(), matches!(&name, &Cow::Owned(_))) {
+                (true, true) => theme.browser_unselected_hover_button_fg_invalid,
+                (true, false) => theme.browser_unselected_hover_button_fg,
+                (false, true) => theme.browser_unselected_button_fg_invalid,
+                (false, false) => theme.browser_unselected_button_fg,
+            }))
+            .frame(false)
+        };
+        let response = match kind {
+            EntryKind::Audio => {
+                let mut add_contents = |ui: &mut Ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(Image::new(include_image!("images/icons/audio.png"))).union(ui.add(button(hovered_entry))).pipe(|response| {
+                            let data = preview.data();
+                            if let Some(data @ PreviewData { length: Some(length), .. }) = preview.path.as_ref().filter(|preview_path| preview_path == &&path).zip(data).map(|(_, data)| data) {
+                                response.union(ui.label(format!(
+                                    "{:>02}:{:>02} of {:>02}:{:>02}",
+                                    data.progress().as_secs() / 60,
+                                    data.progress().as_secs() % 60,
+                                    length.as_secs() / 60,
+                                    length.as_secs() % 60
+                                )))
+                            } else {
+                                response
+                            }
+                        })
+                    })
+                };
+                ui.dnd_drag_source(Id::new((&path, 0)), path.to_path_buf(), &mut add_contents);
+                None
+            }
+            EntryKind::File => Some(Self::add_file(ui, button(hovered_entry))),
+            EntryKind::Directory => {
+                let response = CollapsingHeader::new(name).id_salt(&path).show(ui, |ui| {
+                    Self::add_directory_contents(&path, ui, preview, theme, hovered_entry, some_hovered);
+                });
+                Some(response.flatten())
+            }
+        }?;
+        let response = response.on_hover_cursor(CursorIcon::PointingHand);
+        if response.clicked() {
+            match kind {
+                EntryKind::Audio => {
+                    // TODO: Proper preview implementation with cpal. This is temporary (or at least make it work well with a proper preview widget)
+                    // Also, don't spawn a new thread - instead, dedicate a thread for preview
+                    preview.play_file(path.to_path_buf());
+                }
+                EntryKind::File => {
+                    that_detached(path.clone()).unwrap();
+                }
+                EntryKind::Directory => {}
+            }
+        }
+        if response.hovered() {
+            *some_hovered = true;
+            *hovered_entry = Some(path.to_path_buf());
+        }
+        Some(response)
     }
 
     fn add_directory_contents(folder: &Path, ui: &mut Ui, preview: &mut Preview, theme: &ThemeColors, hovered_entry: &mut Option<PathBuf>, some_hovered: &mut bool) -> Option<Response> {
@@ -264,108 +321,28 @@ impl Browser {
             .sorted_by(|a, b| {
                 a.as_ref()
                     .ok()
-                    .map(EntryKind::from)
-                    .cmp(&b.as_ref().ok().map(EntryKind::from))
+                    .map(|entry| EntryKind::from(entry.path()))
+                    .cmp(&b.as_ref().ok().map(|entry| EntryKind::from(entry.path())))
                     .then_with(|| a.as_ref().map(DirEntry::path).ok().cmp(&b.as_ref().map(DirEntry::path).ok()))
             })
-            .filter_map(|entry| {
-                let entry = entry.unwrap();
-                let path = entry.path();
-                let kind = EntryKind::from(&entry);
-                let name = path
-                    .file_name()
-                    .map_or(path.to_str(), |name| name.to_str())
-                    .map(ToString::to_string)
-                    .ok_or_else(|| String::from_utf8_lossy(path.file_name().unwrap().as_encoded_bytes()).to_string());
-                let button = |hovered_entry: &mut Option<PathBuf>| {
-                    Button::new(
-                        RichText::new(match &name {
-                            Ok(name) | Err(name) => name,
-                        })
-                        .color(match (Some(&path) == hovered_entry.as_ref(), name.is_err()) {
-                            (true, true) => theme.browser_unselected_hover_button_fg_invalid,
-                            (true, false) => theme.browser_unselected_hover_button_fg,
-                            (false, true) => theme.browser_unselected_button_fg_invalid,
-                            (false, false) => theme.browser_unselected_button_fg,
-                        }),
-                    )
-                    .frame(false)
-                };
-                let response = (match kind {
-                    EntryKind::Audio => {
-                        let mut add_contents = |ui: &mut Ui| {
-                            ui.horizontal(|ui| {
-                                ui.add(Image::new(include_image!("images/icons/audio.png"))).union(ui.add(button(hovered_entry))).pipe(|response| {
-                                    let data = preview.data();
-                                    if let Some(data @ PreviewData { length: Some(length), .. }) = preview.path.as_ref().filter(|preview_path| preview_path == &&path).zip(data).map(|(_, data)| data) {
-                                        response.union(ui.label(format!(
-                                            "{:>02}:{:>02} of {:>02}:{:>02}",
-                                            data.progress().as_secs() / 60,
-                                            data.progress().as_secs() % 60,
-                                            length.as_secs() / 60,
-                                            length.as_secs() % 60
-                                        )))
-                                    } else {
-                                        response
-                                    }
-                                })
-                            })
-                        };
-                        if ui.input(|input| input.modifiers.command) {
-                            ui.dnd_drag_source(Id::new((&path, 0)), path.clone(), &mut add_contents);
-                            None
-                        } else {
-                            Some(add_contents(ui).flatten())
-                        }
-                    }
-                    EntryKind::File => Some(
-                        ui.horizontal(|ui| ui.add(Image::new(include_image!("images/icons/file.png"))).union(ui.add(button(hovered_entry))))
-                            .flatten(),
-                    ),
-                    EntryKind::Directory => {
-                        let response = CollapsingHeader::new(match &name {
-                            Ok(name) | Err(name) => name,
-                        })
-                        .id_salt(&path)
-                        .show(ui, |ui| {
-                            Self::add_directory_contents(&path, ui, preview, theme, hovered_entry, some_hovered);
-                        });
-                        Some(response.flatten())
-                    }
-                })?;
-                let response = response.on_hover_cursor(CursorIcon::PointingHand);
-                if response.clicked() {
-                    match kind {
-                        EntryKind::Audio => {
-                            // TODO: Proper preview implementation with cpal. This is temporary (or at least make it work well with a proper preview widget)
-                            // Also, don't spawn a new thread - instead, dedicate a thread for preview
-                            preview.play_file(path.clone());
-                        }
-                        EntryKind::File => {
-                            that_detached(path.clone()).unwrap();
-                        }
-                        EntryKind::Directory => {}
-                    }
-                }
-                if response.hovered() {
-                    *some_hovered = true;
-                    *hovered_entry = Some(path);
-                }
-                Some(response)
-            })
+            .filter_map(|entry| Self::add_entry(&entry.unwrap().path(), theme, hovered_entry, preview, ui, some_hovered))
             .try_flatten()
     }
 
-    fn handle_folder_drop(&mut self, ctx: &Context) {
-        // Handle folder drop
+    fn handle_file_or_folder_drop(&mut self, ctx: &Context) {
+        // Handle file/folder drop
         // TODO: Enable drag and drop on Windows
         // https://docs.rs/egui/latest/egui/struct.RawInput.html#structfield.dropped_files
         let files: Vec<_> = ctx
             .input(|input| input.raw.dropped_files.iter().map(move |DroppedFile { path, .. }| path.clone().ok_or(())).try_collect())
             .unwrap_or_default();
         for path in files {
-            self.open_folders.push(path);
+            self.open_paths.push(path);
         }
+    }
+
+    fn add_file(ui: &mut Ui, button: Button<'_>) -> Response {
+        ui.horizontal(|ui| ui.add(Image::new(include_image!("images/icons/file.png"))).union(ui.add(button))).flatten()
     }
 }
 
