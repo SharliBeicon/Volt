@@ -574,22 +574,9 @@ name = "blerp"
 version = "0.1.0"
 dependencies = [
  "cpal",
- "eframe",
- "egui",
- "egui_extras",
- "egui_plot",
- "image",
  "itertools 0.13.0",
  "num",
- "open",
- "rodio",
- "rustfft",
- "serde",
- "stable_try_trait_v2",
- "strum",
- "tap",
  "thiserror 2.0.9",
- "unicode-truncate",
 ]
 
 [[package]]

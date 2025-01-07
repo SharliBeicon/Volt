@@ -83,18 +83,18 @@ macro_rules! impl_sample_ext {
 impl_sample_ext! {
     f32, FloatingPoint;
     f64, FloatingPoint;
-    i8, PulseCodeModulation, u8;
-    i16, PulseCodeModulation, u16;
-    i32, PulseCodeModulation, u32;
-    i64, PulseCodeModulation, u64;
+    i8, PulseCodeModulation;
+    i16, PulseCodeModulation;
+    i32, PulseCodeModulation;
+    i64, PulseCodeModulation;
     u8, PulseCodeModulation;
-    u16, PulseCodeModulation;
-    u32, PulseCodeModulation;
-    u64, PulseCodeModulation;
+    u16, PulseCodeModulation, i16;
+    u32, PulseCodeModulation, i32;
+    u64, PulseCodeModulation, i64;
     I24, PulseCodeModulation, U24;
     I48, PulseCodeModulation, U48;
-    U24, PulseCodeModulation;
-    U48, PulseCodeModulation;
+    U24, PulseCodeModulation, I24;
+    U48, PulseCodeModulation, I48;
 }
 
 impl<'a> WaveFile<'a> {
