@@ -1,15 +1,19 @@
 #![warn(clippy::nursery, clippy::pedantic, clippy::undocumented_unsafe_blocks)]
 use itertools::Itertools;
 use open::that_detached;
+use rodio::{Decoder, OutputStream, Sink, Source};
 use std::{
     borrow::Cow,
-    fs::{read_dir, DirEntry},
+    fs::{read_dir, DirEntry, File},
+    io::BufReader,
     iter::Iterator,
     mem::{transmute_copy, ManuallyDrop, MaybeUninit},
     ops::BitOr,
     path::{Path, PathBuf},
+    str::FromStr,
     string::ToString,
-    sync::mpsc::{Receiver, Sender},
+    sync::mpsc::{channel, Receiver, Sender},
+    thread::spawn,
     time::{Duration, Instant},
 };
 use strum::Display;
@@ -143,6 +147,49 @@ pub struct Browser {
 }
 
 impl Browser {
+    pub fn new() -> Self {
+        Self {
+            selected_category: Category::Files,
+            other_category_hovered: false,
+            open_paths: vec![PathBuf::from_str("/").unwrap()],
+            preview: {
+                let (path_tx, path_rx) = channel::<PathBuf>();
+                let (file_data_tx, file_data_rx) = channel();
+                // FIXME: Temporary rodio playback, might need to use cpal or make rodio proper
+                spawn(move || {
+                    let (_stream, handle) = OutputStream::try_default().unwrap();
+                    let sink = Sink::try_new(&handle).unwrap();
+                    let mut last_path = None;
+                    loop {
+                        let Ok(path) = path_rx.recv() else {
+                            break;
+                        };
+                        let source = Decoder::new(BufReader::new(File::open(&path).unwrap())).unwrap();
+                        let empty = sink.empty();
+                        sink.stop();
+                        if last_path != Some(path.clone()) || empty {
+                            file_data_tx
+                                .send(PreviewData {
+                                    length: source.total_duration(),
+                                    started_playing: Instant::now(),
+                                })
+                                .unwrap();
+                            sink.append(source);
+                        }
+                        last_path = Some(path.clone());
+                    }
+                });
+                Preview {
+                    path_tx,
+                    file_data_rx,
+                    path: None,
+                    file_data: None,
+                }
+            },
+            hovered_entry: None,
+        }
+    }
+
     pub fn button<'a>(selected: bool, text: &'a str, theme: &'a ThemeColors, hovered: bool) -> impl Widget + use<'a> {
         move |ui: &mut Ui| {
             let color = if selected {
@@ -270,7 +317,7 @@ impl Browser {
             EntryKind::Audio => {
                 let mut add_contents = |ui: &mut Ui| {
                     ui.horizontal(|ui| {
-                        ui.add(Image::new(include_image!("images/icons/audio.png"))).union(ui.add(button(hovered_entry))).pipe(|response| {
+                        ui.add(Image::new(include_image!("../images/icons/audio.png"))).union(ui.add(button(hovered_entry))).pipe(|response| {
                             let data = preview.data();
                             if let Some(data @ PreviewData { length: Some(length), .. }) = preview.path.as_ref().filter(|preview_path| preview_path == &path).zip(data).map(|(_, data)| data) {
                                 response.union(ui.label(format!(
@@ -347,9 +394,6 @@ impl Browser {
     }
 
     fn handle_file_or_folder_drop(&mut self, ctx: &Context) {
-        // Handle file/folder drop
-        // TODO: Enable drag and drop on Windows
-        // https://docs.rs/egui/latest/egui/struct.RawInput.html#structfield.dropped_files
         let files: Vec<_> = ctx
             .input(|input| input.raw.dropped_files.iter().map(move |DroppedFile { path, .. }| path.clone().ok_or(())).try_collect())
             .unwrap_or_default();
@@ -359,7 +403,7 @@ impl Browser {
     }
 
     fn add_file(ui: &mut Ui, button: Button<'_>) -> Response {
-        ui.horizontal(|ui| ui.add(Image::new(include_image!("images/icons/file.png"))).union(ui.add(button))).response
+        ui.horizontal(|ui| ui.add(Image::new(include_image!("../images/icons/file.png"))).union(ui.add(button))).response
     }
 }
 

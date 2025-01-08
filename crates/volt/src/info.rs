@@ -1,4 +1,7 @@
-use std::panic::PanicHookInfo;
+use std::{env::args, fs::File, io::stderr, ops::ControlFlow, path::Path};
+
+use tracing::{info, subscriber::set_global_default};
+use tracing_subscriber::{fmt::layer, layer::SubscriberExt, Registry};
 
 fn get_desktop_environment() -> String {
     if cfg!(target_os = "linux") {
@@ -116,37 +119,20 @@ pub fn dump() {
     println!("Version: {}", env!("CARGO_PKG_VERSION"));
 }
 
-pub fn handle() {
-    if std::env::args().any(|x| x == *"--info") {
+pub fn handle_args() -> ControlFlow<(), ()> {
+    if args().any(|arg| arg == "--info") {
         dump();
-        std::process::exit(0);
+        return ControlFlow::Break(());
     }
-    if std::env::args().any(|x| x == *"--verbose") {
-        println!("Running Volt in verbose mode! Various debug logs will now get logged. For convenience, a debug.log file is also being written to.");
-    }
-}
-
-// TODO: could use the `human_panic` crate
-// For future reference: https://crates.io/crates/human-panic
-pub fn panic_handler(panic_info: &PanicHookInfo<'_>) {
-    if let Some(location) = panic_info.location() {
-        println!("Panic occurred in file '{}' at line {}!", location.file(), location.line(),);
-
-        // Read the file and display the line
-        if let Ok(content) = std::fs::read_to_string(location.file()) {
-            let lines: Vec<&str> = content.lines().collect();
-            if let Some(line) = lines.get((location.line() - 1) as usize) {
-                println!("\n{:>4} | {}", location.line(), line);
-                println!("     | {: >width$}^", "", width = (location.column() - 1) as usize);
-            }
-        }
+    if args().any(|arg| arg == "--verbose") {
+        let path = Path::new("debug.log");
+        let file = File::create(path).unwrap();
+        set_global_default(Registry::default().with(layer().with_writer(stderr)).with(layer().with_ansi(false).with_writer(file))).unwrap();
+        info!(
+            "Running Volt in verbose mode! Various debug logs will now get logged. For convenience, a file at `{}` is also being written to.",
+            path.canonicalize().unwrap().display()
+        );
     }
 
-    if let Some(message) = panic_info.payload().downcast_ref::<String>() {
-        println!("Panic message: {message}");
-    } else if let Some(message) = panic_info.payload().downcast_ref::<&str>() {
-        println!("Panic message: {message}");
-    } else {
-        println!("Panic occurred, message unknown.");
-    }
+    ControlFlow::Continue(())
 }

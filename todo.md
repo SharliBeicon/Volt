@@ -20,7 +20,7 @@ This is a list of things to do (or things that have been done) for Volt!
 | ❌      | All      | Window    | Make the window have a proper icon                                                                           |
 | ❌      | All      | Browser   | Optimize the browser (don't read the folders every frame god damnit)                                         |
 | ❌      | All      | Browser   | Fix sorting and use [https://docs.rs/indextree](https://docs.rs/indextree)                                   |
-| ❌      | Windows  | Browser   | TODO: Enable drag and drop on Windows (browser.rs:223)                                                       |
+| ✔️      | Windows  | Browser   | TODO: Enable drag and drop on Windows (browser.rs:223)                                                       |
 | ❌      | All      | Browser   | TODO: make these two comparisons part of the `rect.contains` check (browser.rs:480)                          |
 | ❌      | All      | Browser   | TODO: Show some devices here! (browser.rs:507)                                                               |
 | ❌      | All      | CLI       | TODO: could use the `human_panic` crate (info.rs:157)                                                        |

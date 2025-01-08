@@ -1,26 +1,19 @@
 use eframe::{egui, run_native, App, CreationContext, NativeOptions};
-use egui::{hex_color, CentralPanel, Context, FontData, FontDefinitions, FontFamily, FontId, SidePanel, TextStyle, TopBottomPanel};
+use egui::{hex_color, CentralPanel, Context, FontData, FontDefinitions, FontFamily, FontId, SidePanel, TextStyle, TopBottomPanel, ViewportBuilder};
 use egui_extras::install_image_loaders;
-use rodio::{Decoder, OutputStream, Sink, Source};
-use std::{fs::File, io::BufReader, path::PathBuf, str::FromStr, sync::mpsc::channel, thread::spawn, time::Instant};
+use human_panic::setup_panic;
+use info::handle_args;
 // TODO: Move everything into components (visual)
-mod browser;
 mod info;
 mod visual;
 
-use browser::{Browser, Category, Preview, PreviewData};
-use visual::{central::central, navbar::navbar, ThemeColors};
+use visual::{browser::Browser, central::central, navbar::navbar, ThemeColors};
 
 fn main() -> eframe::Result {
-    info::handle();
-
-    #[cfg(not(debug_assertions))]
-    {
-        // Panic handling
-        std::panic::set_hook(Box::new(|panic_info| {
-            info::panic_handler(panic_info);
-        }));
-    }
+    setup_panic!();
+    if handle_args().is_break() {
+        return Ok(());
+    };
 
     let title = "Volt";
     let native_options = NativeOptions {
@@ -29,6 +22,7 @@ fn main() -> eframe::Result {
             present_mode: eframe::wgpu::PresentMode::Immediate,
             ..Default::default()
         },
+        viewport: ViewportBuilder::default().with_drag_and_drop(true),
         ..Default::default()
     };
     run_native(title, native_options, Box::new(|cc| Ok(Box::new(VoltApp::new(cc)))))
@@ -58,46 +52,7 @@ impl VoltApp {
                 .collect();
         });
         Self {
-            browser: Browser {
-                selected_category: Category::Files,
-                other_category_hovered: false,
-                open_paths: vec![PathBuf::from_str("/").unwrap()],
-                preview: {
-                    let (path_tx, path_rx) = channel::<PathBuf>();
-                    let (file_data_tx, file_data_rx) = channel();
-                    // FIXME: Temporary rodio playback, might need to use cpal or make rodio proper
-                    spawn(move || {
-                        let (_stream, handle) = OutputStream::try_default().unwrap();
-                        let sink = Sink::try_new(&handle).unwrap();
-                        let mut last_path = None;
-                        loop {
-                            let Ok(path) = path_rx.recv() else {
-                                break;
-                            };
-                            let source = Decoder::new(BufReader::new(File::open(&path).unwrap())).unwrap();
-                            let empty = sink.empty();
-                            sink.stop();
-                            if last_path != Some(path.clone()) || empty {
-                                file_data_tx
-                                    .send(PreviewData {
-                                        length: source.total_duration(),
-                                        started_playing: Instant::now(),
-                                    })
-                                    .unwrap();
-                                sink.append(source);
-                            }
-                            last_path = Some(path.clone());
-                        }
-                    });
-                    Preview {
-                        path_tx,
-                        file_data_rx,
-                        path: None,
-                        file_data: None,
-                    }
-                },
-                hovered_entry: None,
-            },
+            browser: Browser::new(),
             themes: ThemeColors::default(),
         }
     }

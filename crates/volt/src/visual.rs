@@ -1,6 +1,7 @@
 use egui::{hex_color, Color32};
 
 // Expose components
+pub mod browser;
 pub mod central;
 pub mod navbar;
 pub mod switch;
