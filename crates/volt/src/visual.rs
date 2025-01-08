@@ -7,10 +7,11 @@ pub mod navbar;
 pub mod switch;
 
 // Theming
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ThemeColors {
-    pub navbar: Color32,
+    pub navbar_background: Color32,
     pub navbar_outline: Color32,
+    pub central_background: Color32,
     pub browser: Color32,
     pub browser_outline: Color32,
     pub browser_selected_button_fg: Color32,
@@ -25,8 +26,9 @@ pub struct ThemeColors {
 impl Default for ThemeColors {
     fn default() -> Self {
         Self {
-            navbar: hex_color!("262b3b"),
+            navbar_background: hex_color!("262b3b"),
             navbar_outline: hex_color!("00000080"),
+            central_background: hex_color!("1e222f"),
             browser: hex_color!("242938"),
             browser_outline: hex_color!("00000080"),
             browser_selected_button_fg: hex_color!("ffcf7b"),

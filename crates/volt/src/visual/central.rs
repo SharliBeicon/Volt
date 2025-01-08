@@ -3,14 +3,27 @@ use std::io::BufReader;
 use std::ops::BitOr;
 use std::path::PathBuf;
 
-use crate::visual::ThemeColors;
 use eframe::egui;
 use egui::{hex_color, vec2, Color32, Frame, Margin, Response, Sense, Stroke, Ui, Vec2, Widget};
 use rodio::{Decoder, Source};
 use tap::Tap;
 
-pub fn central(theme: &ThemeColors) -> impl Widget + use<'_> {
-    |ui: &mut Ui| {
+pub struct Central {}
+
+impl Default for Central {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Central {
+    pub const fn new() -> Self {
+        Self {}
+    }
+}
+
+impl Widget for &mut Central {
+    fn ui(self, ui: &mut Ui) -> Response {
         Frame::default()
             .inner_margin(Margin::same(8.))
             .show(ui, |ui| {

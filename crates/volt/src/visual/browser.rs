@@ -144,10 +144,11 @@ pub struct Browser {
     pub open_paths: Vec<PathBuf>,
     pub preview: Preview,
     pub hovered_entry: Option<PathBuf>,
+    pub themes: ThemeColors,
 }
 
 impl Browser {
-    pub fn new() -> Self {
+    pub fn new(themes: ThemeColors) -> Self {
         Self {
             selected_category: Category::Files,
             other_category_hovered: false,
@@ -187,10 +188,11 @@ impl Browser {
                 }
             },
             hovered_entry: None,
+            themes,
         }
     }
 
-    pub fn button<'a>(selected: bool, text: &'a str, theme: &'a ThemeColors, hovered: bool) -> impl Widget + use<'a> {
+    pub fn button<'a>(theme: &'a ThemeColors, selected: bool, text: &'a str, hovered: bool) -> impl Widget + use<'a> {
         move |ui: &mut Ui| {
             let color = if selected {
                 theme.browser_selected_button_fg
@@ -211,85 +213,24 @@ impl Browser {
         }
     }
 
-    pub fn widget<'a>(&'a mut self, ctx: &'a Context, theme: &'a ThemeColors) -> impl Widget + use<'a> + 'a {
-        move |ui: &mut Ui| {
-            let (was_pressed, press_position) = ctx
-                .input(|input_state| Some((input_state.pointer.button_released(PointerButton::Primary), Some(input_state.pointer.latest_pos()?))))
-                .unwrap_or_default();
-            ScrollArea::vertical()
-                .drag_to_scroll(false)
-                .show_viewport(ui, |ui, _| {
-                    egui::Frame::default().inner_margin(Margin::same(8.)).show(ui, |ui| {
-                        ui.vertical(|ui| {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 16.;
-                                ui.columns_const(|uis| {
-                                    // https://internals.rust-lang.org/t/should-there-by-an-array-zip-method/21611/5
-                                    fn zip<T, U, const N: usize>(ts: [T; N], us: [U; N]) -> [(T, U); N] {
-                                        let mut ts = ts.map(ManuallyDrop::new);
-                                        let mut us = us.map(ManuallyDrop::new);
-                                        let mut zip = [const { MaybeUninit::<(T, U)>::uninit() }; N];
-                                        for i in 0..N {
-                                            // SAFETY: ts[i] taken once, untouched afterwards
-                                            let t = unsafe { ManuallyDrop::take(&mut ts[i]) };
-                                            // SAFETY: us[i] taken once, untouched afterwards
-                                            let u = unsafe { ManuallyDrop::take(&mut us[i]) };
-                                            zip[i].write((t, u));
-                                        }
-                                        // SAFETY: zip has been fully initialized
-                                        unsafe { transmute_copy(&zip) }
-                                    }
-                                    zip(Category::VARIANTS, uis.each_mut())
-                                        .map(|(category, ui)| {
-                                            let selected = self.selected_category == category;
-                                            let string = category.to_string();
-                                            let button = Self::button(selected, &string, theme, self.other_category_hovered);
-                                            let mut response = ui.add(button);
-                                            let rect = response.rect;
-                                            if !selected {
-                                                self.other_category_hovered = response.hovered();
-                                                response = response.on_hover_cursor(CursorIcon::PointingHand);
-                                            }
-                                            if press_position.is_some_and(|press_position| was_pressed && rect.contains(press_position)) {
-                                                self.selected_category = category;
-                                            }
-                                            response
-                                        })
-                                        .into_iter()
-                                        .reduce(|a, b| a.union(b))
-                                        .unwrap()
-                                })
-                            })
-                            .response
-                            .union(match self.selected_category {
-                                Category::Files => self.add_files(ctx, ui, theme),
-                                Category::Devices => {
-                                    // TODO: Show some devices here!
-                                    ui.label("Devices")
-                                }
-                            })
-                        })
-                    })
-                })
-                .inner
-                .response
-        }
-    }
-
-    fn add_files(&mut self, ctx: &Context, ui: &mut Ui, theme: &ThemeColors) -> Response {
-        self.handle_file_or_folder_drop(ctx);
+    fn add_files(&mut self, ui: &mut Ui) -> Response {
+        self.handle_file_or_folder_drop(ui.ctx());
         egui::Frame::default()
             .inner_margin(Margin::same(8.))
             .show(ui, |ui| {
                 ui.vertical(|ui| {
                     let Self {
-                        open_paths, preview, hovered_entry, ..
+                        open_paths,
+                        preview,
+                        hovered_entry,
+                        themes,
+                        ..
                     } = self;
                     open_paths
                         .iter()
                         .map(|path| {
                             let mut some_hovered = false;
-                            let response = Self::add_entry(path, theme, hovered_entry, preview, ui, &mut some_hovered);
+                            let response = Self::add_entry(path, themes, hovered_entry, preview, ui, &mut some_hovered);
                             if !some_hovered {
                                 *hovered_entry = None;
                             }
@@ -404,6 +345,72 @@ impl Browser {
 
     fn add_file(ui: &mut Ui, button: Button<'_>) -> Response {
         ui.horizontal(|ui| ui.add(Image::new(include_image!("../images/icons/file.png"))).union(ui.add(button))).response
+    }
+}
+
+impl Widget for &mut Browser {
+    fn ui(self, ui: &mut Ui) -> Response {
+        let (was_pressed, press_position) = ui
+            .ctx()
+            .input(|input_state| Some((input_state.pointer.button_released(PointerButton::Primary), Some(input_state.pointer.latest_pos()?))))
+            .unwrap_or_default();
+        ScrollArea::vertical()
+            .drag_to_scroll(false)
+            .show_viewport(ui, |ui, _| {
+                egui::Frame::default().inner_margin(Margin::same(8.)).show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 16.;
+                            ui.columns_const(|uis| {
+                                // https://internals.rust-lang.org/t/should-there-by-an-array-zip-method/21611/5
+                                fn zip<T, U, const N: usize>(ts: [T; N], us: [U; N]) -> [(T, U); N] {
+                                    let mut ts = ts.map(ManuallyDrop::new);
+                                    let mut us = us.map(ManuallyDrop::new);
+                                    let mut zip = [const { MaybeUninit::<(T, U)>::uninit() }; N];
+                                    for i in 0..N {
+                                        // SAFETY: ts[i] taken once, untouched afterwards
+                                        let t = unsafe { ManuallyDrop::take(&mut ts[i]) };
+                                        // SAFETY: us[i] taken once, untouched afterwards
+                                        let u = unsafe { ManuallyDrop::take(&mut us[i]) };
+                                        zip[i].write((t, u));
+                                    }
+                                    // SAFETY: zip has been fully initialized
+                                    unsafe { transmute_copy(&zip) }
+                                }
+                                zip(Category::VARIANTS, uis.each_mut())
+                                    .map(|(category, ui)| {
+                                        let selected = self.selected_category == category;
+                                        let string = category.to_string();
+                                        let button = Browser::button(&self.themes, selected, &string, self.other_category_hovered);
+                                        let mut response = ui.add(button);
+                                        let rect = response.rect;
+                                        if !selected {
+                                            self.other_category_hovered = response.hovered();
+                                            response = response.on_hover_cursor(CursorIcon::PointingHand);
+                                        }
+                                        if press_position.is_some_and(|press_position| was_pressed && rect.contains(press_position)) {
+                                            self.selected_category = category;
+                                        }
+                                        response
+                                    })
+                                    .into_iter()
+                                    .reduce(|a, b| a.union(b))
+                                    .unwrap()
+                            })
+                        })
+                        .response
+                        .union(match self.selected_category {
+                            Category::Files => self.add_files(ui),
+                            Category::Devices => {
+                                // TODO: Show some devices here!
+                                ui.label("Devices")
+                            }
+                        })
+                    })
+                })
+            })
+            .inner
+            .response
     }
 }
 

@@ -1,5 +1,5 @@
 use eframe::{egui, run_native, App, CreationContext, NativeOptions};
-use egui::{hex_color, CentralPanel, Context, FontData, FontDefinitions, FontFamily, FontId, SidePanel, TextStyle, TopBottomPanel, ViewportBuilder};
+use egui::{CentralPanel, Context, FontData, FontDefinitions, FontFamily, FontId, SidePanel, TextStyle, TopBottomPanel, ViewportBuilder};
 use egui_extras::install_image_loaders;
 use human_panic::setup_panic;
 use info::handle_args;
@@ -7,7 +7,7 @@ use info::handle_args;
 mod info;
 mod visual;
 
-use visual::{browser::Browser, central::central, navbar::navbar, ThemeColors};
+use visual::{browser::Browser, central::Central, navbar::navbar, ThemeColors};
 
 fn main() -> eframe::Result {
     setup_panic!();
@@ -15,21 +15,24 @@ fn main() -> eframe::Result {
         return Ok(());
     };
 
-    let title = "Volt";
-    let native_options = NativeOptions {
-        vsync: true,
-        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
-            present_mode: eframe::wgpu::PresentMode::Immediate,
+    run_native(
+        "Volt",
+        NativeOptions {
+            vsync: true,
+            wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+                present_mode: eframe::wgpu::PresentMode::Immediate,
+                ..Default::default()
+            },
+            viewport: ViewportBuilder::default().with_drag_and_drop(true),
             ..Default::default()
         },
-        viewport: ViewportBuilder::default().with_drag_and_drop(true),
-        ..Default::default()
-    };
-    run_native(title, native_options, Box::new(|cc| Ok(Box::new(VoltApp::new(cc)))))
+        Box::new(|cc| Ok(Box::new(VoltApp::new(cc)))),
+    )
 }
 
 struct VoltApp {
     pub browser: Browser,
+    pub central: Central,
     pub themes: ThemeColors,
 }
 
@@ -37,23 +40,33 @@ impl VoltApp {
     fn new(cc: &CreationContext<'_>) -> Self {
         const FONT_NAME: &str = "IBMPlexMono";
         install_image_loaders(&cc.egui_ctx);
-        let mut fonts = FontDefinitions::default();
-        fonts
-            .font_data
-            .insert(FONT_NAME.to_string(), FontData::from_static(include_bytes!("fonts/ibm-plex-mono/IBMPlexMono-Regular.ttf")));
-        fonts.families.insert(FontFamily::Name(FONT_NAME.into()), vec![FONT_NAME.to_string()]);
-        cc.egui_ctx.set_fonts(fonts);
-        cc.egui_ctx.all_styles_mut(|style| {
-            let id = FontId::new(12., FontFamily::Name(FONT_NAME.into()));
-            style.override_font_id = Some(id.clone());
-            style.text_styles = [TextStyle::Heading, TextStyle::Body, TextStyle::Button, TextStyle::Small, TextStyle::Monospace]
-                .into_iter()
-                .map(|style| (style, id.clone()))
-                .collect();
+        cc.egui_ctx.set_fonts({
+            let mut fonts = FontDefinitions::default();
+            fonts
+                .font_data
+                .insert(FONT_NAME.to_string(), FontData::from_static(include_bytes!("fonts/ibm-plex-mono/IBMPlexMono-Regular.ttf")));
+            fonts.families.insert(FontFamily::Proportional, vec![FONT_NAME.to_string()]);
+            fonts
         });
+        cc.egui_ctx.all_styles_mut(|style| {
+            const BODY_TEXT_SIZE: f32 = 12.;
+            let id = FontId::new(BODY_TEXT_SIZE, FontFamily::Proportional);
+            style.override_font_id = Some(id);
+            style.text_styles = [
+                (TextStyle::Heading, BODY_TEXT_SIZE * 1.5),
+                (TextStyle::Body, BODY_TEXT_SIZE),
+                (TextStyle::Button, BODY_TEXT_SIZE),
+                (TextStyle::Small, BODY_TEXT_SIZE * 0.8),
+                (TextStyle::Monospace, BODY_TEXT_SIZE),
+            ]
+            .map(|(text_style, size)| (text_style, FontId::new(size, FontFamily::Proportional)))
+            .into();
+        });
+        let themes = ThemeColors::default();
         Self {
-            browser: Browser::new(),
-            themes: ThemeColors::default(),
+            browser: Browser::new(themes),
+            central: Central::new(),
+            themes,
         }
     }
 }
@@ -61,14 +74,14 @@ impl VoltApp {
 impl App for VoltApp {
     fn update(&mut self, ctx: &Context, _: &mut eframe::Frame) {
         ctx.request_repaint();
-        TopBottomPanel::top("navbar").frame(egui::Frame::default().fill(self.themes.navbar)).show(ctx, |ui| {
+        TopBottomPanel::top("navbar").frame(egui::Frame::default().fill(self.themes.navbar_background)).show(ctx, |ui| {
             ui.add(navbar());
         });
-        SidePanel::left("sidebar").default_width(300.).frame(egui::Frame::default().fill(self.themes.browser)).show(ctx, |ui| {
-            ui.add(self.browser.widget(ctx, &self.themes));
+        SidePanel::left("browser").default_width(300.).frame(egui::Frame::default().fill(self.themes.browser)).show(ctx, |ui| {
+            ui.add(&mut self.browser);
         });
-        CentralPanel::default().frame(egui::Frame::default().fill(hex_color!("#1e222f"))).show(ctx, |ui| {
-            ui.add(central(&self.themes));
+        CentralPanel::default().frame(egui::Frame::default().fill(self.themes.central_background)).show(ctx, |ui| {
+            ui.add(&mut self.central);
         });
     }
 
