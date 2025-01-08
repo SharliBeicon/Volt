@@ -1,10 +1,10 @@
 use std::io::{BufReader, Cursor};
 
 use eframe::{egui, run_native, App, CreationContext, NativeOptions};
-use egui::{include_image, CentralPanel, Context, FontData, FontDefinitions, FontFamily, FontId, IconData, SidePanel, TextStyle, TopBottomPanel, ViewportBuilder};
+use egui::{CentralPanel, Context, FontData, FontDefinitions, FontFamily, FontId, IconData, SidePanel, TextStyle, TopBottomPanel, ViewportBuilder};
 use egui_extras::install_image_loaders;
 use human_panic::setup_panic;
-use image::{io::Reader, ImageFormat, ImageReader};
+use image::{ImageFormat, ImageReader};
 use info::handle_args;
 // TODO: Move everything into components (visual)
 mod info;

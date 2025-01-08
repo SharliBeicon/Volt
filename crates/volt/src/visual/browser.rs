@@ -20,8 +20,8 @@ use strum::Display;
 use tap::Pipe;
 
 use egui::{
-    emath::TSTransform, include_image, vec2, Button, CollapsingHeader, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, LayerId, Margin, Order, PointerButton, Response, RichText, ScrollArea,
-    Sense, Stroke, Ui, Widget,
+    emath::TSTransform, include_image, vec2, Button, CollapsingHeader, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, InnerResponse, LayerId, Margin, Order, PointerButton, Response,
+    RichText, ScrollArea, Sense, Stroke, Ui, Widget,
 };
 
 use crate::visual::ThemeColors;
@@ -344,7 +344,8 @@ impl Browser {
     }
 
     fn add_file(ui: &mut Ui, button: Button<'_>) -> Response {
-        ui.horizontal(|ui| ui.add(Image::new(include_image!("../images/icons/file.png"))).union(ui.add(button))).response
+        let InnerResponse { inner, response } = ui.horizontal(|ui| ui.add(Image::new(include_image!("../images/icons/file.png"))).union(ui.add(button)));
+        inner | response
     }
 }
 
