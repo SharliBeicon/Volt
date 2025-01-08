@@ -1,12 +1,16 @@
+use std::io::{BufReader, Cursor};
+
 use eframe::{egui, run_native, App, CreationContext, NativeOptions};
-use egui::{CentralPanel, Context, FontData, FontDefinitions, FontFamily, FontId, SidePanel, TextStyle, TopBottomPanel, ViewportBuilder};
+use egui::{include_image, CentralPanel, Context, FontData, FontDefinitions, FontFamily, FontId, IconData, SidePanel, TextStyle, TopBottomPanel, ViewportBuilder};
 use egui_extras::install_image_loaders;
 use human_panic::setup_panic;
+use image::{io::Reader, ImageFormat, ImageReader};
 use info::handle_args;
 // TODO: Move everything into components (visual)
 mod info;
 mod visual;
 
+use tap::{Pipe, Tap};
 use visual::{browser::Browser, central::Central, navbar::navbar, ThemeColors};
 
 fn main() -> eframe::Result {
@@ -14,7 +18,6 @@ fn main() -> eframe::Result {
     if handle_args().is_break() {
         return Ok(());
     };
-
     run_native(
         "Volt",
         NativeOptions {
@@ -23,7 +26,17 @@ fn main() -> eframe::Result {
                 present_mode: eframe::wgpu::PresentMode::Immediate,
                 ..Default::default()
             },
-            viewport: ViewportBuilder::default().with_drag_and_drop(true),
+            viewport: ViewportBuilder::default().with_drag_and_drop(true).with_icon(
+                ImageReader::new(BufReader::new(Cursor::new(include_bytes!("images/icons/icon.png").as_ref())))
+                    .tap_mut(|reader| reader.set_format(ImageFormat::Png))
+                    .decode()
+                    .unwrap()
+                    .pipe(|image| IconData {
+                        rgba: image.to_rgb8().into_raw(),
+                        height: image.height(),
+                        width: image.width(),
+                    }),
+            ),
             ..Default::default()
         },
         Box::new(|cc| Ok(Box::new(VoltApp::new(cc)))),
