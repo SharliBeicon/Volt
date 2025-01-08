@@ -77,3 +77,42 @@ pub mod clip {
         }
     }
 }
+
+pub mod scale {
+    use std::convert::Infallible;
+
+    use super::{Effect, Stuff};
+    use crate::Block;
+    use cpal::{FromSample, Sample};
+    use itertools::Itertools;
+
+    /// An effect that scales a sample by a factor.
+    pub struct Scale {
+        factor: f64,
+    }
+
+    impl<T: Sample + FromSample<f64>, const N: usize> Effect<T, N> for Scale
+    where
+        f64: FromSample<T>,
+    {
+        type Error = Infallible;
+
+        fn apply<'a>(&self, mut stuff: Stuff<'a, T, N>) -> Result<Stuff<'a, T, N>, Self::Error> {
+            stuff.blocks = stuff
+                .blocks
+                .iter()
+                .map(|Block(block)| Block(block.map(|sample| T::from_sample(f64::from_sample(sample) * self.factor))))
+                .collect_vec()
+                .into();
+            Ok(stuff)
+        }
+    }
+
+    impl Scale {
+        /// Return a new [`Scale`] which scales samples by `factor`.
+        #[must_use]
+        pub const fn new(factor: f64) -> Self {
+            Self { factor }
+        }
+    }
+}
