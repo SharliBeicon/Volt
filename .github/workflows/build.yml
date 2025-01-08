@@ -25,3 +25,4 @@ jobs:
       uses: actions/upload-artifact@v3
       with:
         path: target/release/volt*
+        name: volt-${{ matrix.os }}
