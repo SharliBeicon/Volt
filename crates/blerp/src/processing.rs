@@ -3,6 +3,7 @@ use std::ops::{Mul, Neg};
 pub mod export;
 pub mod generation;
 pub mod live;
+pub mod effects;
 
 /// Return the `sample` clamped to between `threshold` and `-threshold` (inclusive).
 ///
