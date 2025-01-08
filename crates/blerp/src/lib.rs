@@ -1,56 +1,24 @@
 #![warn(clippy::nursery, clippy::pedantic, clippy::undocumented_unsafe_blocks)]
-use std::{iter::Sum, ops::Div};
-
-use cpal::{FromSample, Sample};
-use itertools::Itertools;
-
 pub mod device;
 pub mod processing;
 pub mod wavefile;
 
-#[derive(Debug, Clone, Copy)]
-#[repr(transparent)]
-pub struct Block<T: Sample, const N: usize>([T; N]);
+pub mod utils {
+    use std::mem::{transmute_copy, ManuallyDrop, MaybeUninit};
 
-impl<T: Sample> From<T> for Block<T, 1> {
-    fn from(value: T) -> Self {
-        Self([value])
-    }
-}
-
-impl<T: Sample, const N: usize> From<[T; N]> for Block<T, N> {
-    fn from(value: [T; N]) -> Self {
-        Self(value)
-    }
-}
-
-impl<T: Sample + FromSample<f64>, const N: usize> Div<T> for Block<T, N>
-where
-    f64: FromSample<T>,
-{
-    type Output = Self;
-
-    fn div(self, rhs: T) -> Self::Output {
-        Self(self.0.map(|sample| T::from_sample(f64::from_sample(sample) / f64::from_sample(rhs))))
-    }
-}
-
-impl<T: Sample + FromSample<f64>, const N: usize> Sum for Block<T, N>
-where
-    f64: FromSample<T>,
-{
-    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        iter.fold([T::EQUILIBRIUM; N], |a, Self(b)| {
-            // SAFETY: The iterator is produced from `a` and `b`, which are both arrays of size `N`, so the iterator has `N` elements.
-            // Also, `zip_eq` does not panic because `a` and `b` are both arrays of size `N`.
-            unsafe {
-                a.into_iter()
-                    .zip_eq(b)
-                    .map(|(a, b)| T::from_sample(f64::from_sample(a) + f64::from_sample(b)))
-                    .collect_array()
-                    .unwrap_unchecked()
-            }
-        })
-        .into()
+    // https://internals.rust-lang.org/t/should-there-by-an-array-zip-method/21611/5
+    pub fn zip<T, U, const N: usize>(ts: [T; N], us: [U; N]) -> [(T, U); N] {
+        let mut ts = ts.map(ManuallyDrop::new);
+        let mut us = us.map(ManuallyDrop::new);
+        let mut zip = [const { MaybeUninit::<(T, U)>::uninit() }; N];
+        for i in 0..N {
+            // SAFETY: ts[i] taken once, untouched afterwards
+            let t = unsafe { ManuallyDrop::take(&mut ts[i]) };
+            // SAFETY: us[i] taken once, untouched afterwards
+            let u = unsafe { ManuallyDrop::take(&mut us[i]) };
+            zip[i].write((t, u));
+        }
+        // SAFETY: zip has been fully initialized
+        unsafe { transmute_copy(&zip) }
     }
 }

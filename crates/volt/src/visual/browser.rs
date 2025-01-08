@@ -1,4 +1,5 @@
 #![warn(clippy::nursery, clippy::pedantic, clippy::undocumented_unsafe_blocks)]
+use blerp::utils::zip;
 use itertools::Itertools;
 use open::that_detached;
 use rodio::{Decoder, OutputStream, Sink, Source};
@@ -7,7 +8,6 @@ use std::{
     fs::{read_dir, DirEntry, File},
     io::BufReader,
     iter::Iterator,
-    mem::{transmute_copy, ManuallyDrop, MaybeUninit},
     ops::BitOr,
     path::{Path, PathBuf},
     str::FromStr,
@@ -363,21 +363,6 @@ impl Widget for &mut Browser {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 16.;
                             ui.columns_const(|uis| {
-                                // https://internals.rust-lang.org/t/should-there-by-an-array-zip-method/21611/5
-                                fn zip<T, U, const N: usize>(ts: [T; N], us: [U; N]) -> [(T, U); N] {
-                                    let mut ts = ts.map(ManuallyDrop::new);
-                                    let mut us = us.map(ManuallyDrop::new);
-                                    let mut zip = [const { MaybeUninit::<(T, U)>::uninit() }; N];
-                                    for i in 0..N {
-                                        // SAFETY: ts[i] taken once, untouched afterwards
-                                        let t = unsafe { ManuallyDrop::take(&mut ts[i]) };
-                                        // SAFETY: us[i] taken once, untouched afterwards
-                                        let u = unsafe { ManuallyDrop::take(&mut us[i]) };
-                                        zip[i].write((t, u));
-                                    }
-                                    // SAFETY: zip has been fully initialized
-                                    unsafe { transmute_copy(&zip) }
-                                }
                                 zip(Category::VARIANTS, uis.each_mut())
                                     .map(|(category, ui)| {
                                         let selected = self.selected_category == category;
