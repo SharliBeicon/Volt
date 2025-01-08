@@ -1,0 +1,10 @@
+[package]
+name = "blerp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cpal = "0.15.3"
+itertools = "0.14.0"
+num = "0.4.3"
+thiserror = "2.0.9"
