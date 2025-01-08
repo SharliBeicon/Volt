@@ -1,4 +1,4 @@
-use std::{borrow::Cow, convert::Infallible};
+use std::borrow::Cow;
 
 use cpal::Sample;
 
@@ -8,6 +8,8 @@ use crate::Block;
 pub trait Effect<T: Sample, const N: usize> {
     type Error;
     /// Apply the effect to a sequence of blocks.
+    /// # Errors
+    /// If the effect fails to apply, return an error.
     fn apply<'a>(&self, input: Stuff<'a, T, N>) -> Result<Stuff<'a, T, N>, Self::Error>;
 }
 
