@@ -147,7 +147,7 @@ impl Widget for &mut Central {
                                             Frame::default()
                                                 .rounding(4.)
                                                 .inner_margin(4.)
-                                                .stroke(Stroke::new(1., hex_color!("00000080")))
+                                                .stroke(Stroke::new(1., hex_color!("80808080")))
                                                 .show(ui, |ui| {
                                                     ui.label("Effect");
                                                     ui.label(match &node.data {
@@ -183,9 +183,26 @@ impl Widget for &mut Central {
                                     None
                                 }
                             }) {
+                                const RESOLUTION: usize = 20;
                                 let a = a.right_center();
                                 let b = b.left_center();
-                                painter.line_segment([a, b], Stroke::new(2., Color32::YELLOW));
+                                let strength = 100_f32.min(a.distance(b) / 2.);
+
+                                for (a, b) in (0..=RESOLUTION)
+                                    .map(|t| {
+                                        #[allow(clippy::cast_precision_loss, reason = "rounding errors are negligible because this is a visual effect")]
+                                        let t = t as f32 / RESOLUTION as f32;
+
+                                        (1. - t).powi(3) * a
+                                            + (3. * (1. - t).powi(2) * t * (a + vec2(strength, 0.))).to_vec2()
+                                            + (3. * (1. - t) * t.powi(2) * (b - vec2(strength, 0.))).to_vec2()
+                                            + (t.powi(3) * b).to_vec2()
+                                    })
+                                    .tuple_windows()
+                                {
+                                    #[allow(clippy::tuple_array_conversions, reason = "this looks fine")]
+                                    painter.line_segment([a, b], Stroke::new(2., hex_color!("#80808080")));
+                                }
                             }
                         })
                         .response
