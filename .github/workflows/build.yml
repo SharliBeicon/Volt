@@ -16,6 +16,9 @@ jobs:
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
           ${{ runner.os }}-cargo-
+    - if: ${{ matrix.os == 'ubuntu-latest' }}
+      name: Install dependencies
+      run: sudo apt install -y libasound2-dev
     - name: Build
       run: cargo build -r
     - name: Upload artifacts
