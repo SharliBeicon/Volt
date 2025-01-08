@@ -27,6 +27,8 @@ mod graph {
 
     pub struct Graph {
         pub nodes: HashMap<NodeId, Node>,
+        pub pan_offset: Vec2,
+        pub drag_start_offset: Option<Vec2>,
     }
 
     pub struct Node {
@@ -93,6 +95,8 @@ impl Central {
                     ),
                 ]
                 .into(),
+                pan_offset: Vec2::ZERO,
+                drag_start_offset: None,
             }),
         }
     }
@@ -134,7 +138,7 @@ impl Widget for &mut Central {
             .inner_margin(Margin::same(8.))
             .show(ui, |ui| match &mut self.mode {
                 Mode::Playlist => Central::add_playlist(ui),
-                Mode::Graph(Graph { nodes }) => {
+                Mode::Graph(Graph { nodes, pan_offset, drag_start_offset }) => {
                     let (_, rect) = ui.allocate_space(ui.available_size());
                     let painter = ui.painter_at(rect);
                     Frame::default()
@@ -143,7 +147,7 @@ impl Widget for &mut Central {
                                 .iter()
                                 .map(|(id, node)| {
                                     let response = ui
-                                        .allocate_new_ui(UiBuilder::new().max_rect(Rect::from_min_size(rect.center() + node.position, Vec2::INFINITY)), |ui| {
+                                        .allocate_new_ui(UiBuilder::new().max_rect(Rect::from_min_size(rect.center() + node.position + *pan_offset, Vec2::INFINITY)), |ui| {
                                             Frame::default()
                                                 .rounding(4.)
                                                 .inner_margin(4.)
@@ -161,6 +165,19 @@ impl Widget for &mut Central {
                                     (*id, response)
                                 })
                                 .collect();
+                            let is_being_dragged = ui.ctx().is_being_dragged(Id::new("graph background"));
+                            if is_being_dragged {
+                                let pos = ui.ctx().pointer_interact_pos().unwrap();
+                                if let Some(drag_start_offset) = drag_start_offset {
+                                    ui.ctx().set_cursor_icon(CursorIcon::Move);
+                                    *pan_offset = pos - rect.center() - *drag_start_offset;
+                                } else {
+                                    *drag_start_offset = Some(pos - rect.center() - *pan_offset);
+                                }
+                            } else {
+                                ui.interact(rect, Id::new("graph background"), Sense::click_and_drag()).on_hover_cursor(CursorIcon::Grab);
+                                *drag_start_offset = None;
+                            }
                             for (id, node) in nodes.iter_mut() {
                                 let is_being_dragged = ui.ctx().is_being_dragged(Id::new(id));
                                 if is_being_dragged {
