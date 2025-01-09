@@ -6,7 +6,10 @@ use std::ops::BitOr;
 use std::path::PathBuf;
 
 use eframe::egui;
-use egui::{hex_color, vec2, Color32, CursorIcon, Frame, Id, Margin, Rect, Response, ScrollArea, Sense, Separator, Stroke, Ui, UiBuilder, Vec2, Widget};
+use egui::{
+    hex_color, scroll_area::ScrollBarVisibility, vec2, Align, Color32, CursorIcon, Frame, Id, Layout, Margin, Pos2, Rangef, Rect, Response, ScrollArea, Sense, Separator, Stroke, Ui, UiBuilder, Vec2,
+    Widget,
+};
 use graph::{Graph, NodeData};
 use itertools::Itertools;
 use playlist::{Playlist, Time, TimeSignature};
@@ -45,7 +48,7 @@ mod graph {
 }
 
 mod playlist {
-    use std::time::Duration;
+    use std::{path::PathBuf, time::Duration};
 
     use egui::Vec2;
 
@@ -54,15 +57,20 @@ mod playlist {
         pub time_signature: TimeSignature,
         pub tempo: f64,
         pub time: Time,
-        pub pan_offset: Vec2,
         /// The zoom factor for the playlist view. `[400.0 60.0]` means a measure is 400 pixels wide and a track is 60 pixels tall.
         pub zoom: Vec2,
+        pub scrolled_first_frame: bool,
     }
 
     pub struct Clip {
         pub start: Time,
         pub length: Time,
         pub track: u32,
+        pub data: ClipData,
+    }
+
+    pub enum ClipData {
+        FromFile { path: PathBuf },
     }
 
     #[derive(Debug, Clone, Copy, Default)]
@@ -110,31 +118,28 @@ impl Central {
                 time_signature: TimeSignature { beats_per_measure: 4, beat_unit: 4 },
                 tempo: 120.,
                 time: Time::default(),
-                pan_offset: Vec2::ZERO,
                 zoom: vec2(400., 60.),
+                scrolled_first_frame: false,
             }),
         }
     }
 
     fn add_playlist(ui: &mut Ui, playlist: &mut Playlist) -> Response {
-        ui.spacing_mut().item_spacing = Vec2::ZERO;
         ScrollArea::both()
+            .auto_shrink(false)
+            .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
             .show(ui, |ui| {
-                ui.vertical(|ui| {
-                    let ui = ui as *mut Ui;
-                    (0..=playlist.clips.iter().map(|clip| clip.track).max().unwrap_or_default())
-                        .map(|y| {
-                            Frame::default()
-                                .inner_margin(Margin::same(8.))
-                                .fill(hex_color!("#101010"))
-                                .show(
-                                    {
-                                        // SAFETY: The pointer was created by casting a reference, so it must be non-null, properly aligned, and valid. Its lifetime is restricted to the closure below and no
-                                        // other pointer or reference accesses the memory it points to in the closure.
-                                        unsafe { &mut *ui }
-                                    },
-                                    |ui| {
-                                        let (response, painter) = ui.allocate_painter(vec2(ui.available_width(), playlist.zoom.y), Sense::hover());
+                ui.allocate_space(ui.available_size());
+                let response = ui
+                    .with_layout(Layout::top_down(Align::Min).with_main_align(Align::Max), |ui| {
+                        ui.allocate_space(vec2(0., playlist.zoom.y));
+                        (0..=playlist.clips.iter().map(|clip| clip.track).max().unwrap_or_default())
+                            .rev()
+                            .map(|y| {
+                                Frame::default()
+                                    .fill(hex_color!("#101010"))
+                                    .show(ui, |ui| {
+                                        let (response, painter) = ui.allocate_painter(vec2(f32::INFINITY, playlist.zoom.y), Sense::hover());
                                         if let Some(path) = response.dnd_hover_payload::<PathBuf>() {
                                             if let Some(duration) = File::open(&*path)
                                                 .ok()
@@ -146,18 +151,23 @@ impl Central {
                                             }
                                         };
                                         ui.label(format!("track {y}")).union(response)
-                                    },
-                                )
-                                .response
-                        })
-                        .interleave_shortest(repeat_with(|| {
-                            // SAFETY: The pointer was created by casting a reference, so it must be non-null, properly aligned, and valid. Its lifetime is restricted to this closure and no other pointer or
-                            // reference accesses the memory it points to in the closure.
-                            unsafe { (*ui).add(Separator::default().spacing(0.)) }
-                        }))
-                        .reduce(Response::bitor)
-                })
-                .response
+                                    })
+                                    .response
+                            })
+                            .reduce(Response::bitor)
+                            .unwrap()
+                    })
+                    .response;
+                let painter = ui.painter();
+                // FIXME: these x values do not take into account the `ScrollArea`'s x scroll position
+                for x in (0..10_u16).map(|index| f32::from(index) * playlist.zoom.x) {
+                    painter.vline(x, ui.clip_rect().y_range(), Stroke::new(1., hex_color!("#ff0000")));
+                }
+                if !playlist.scrolled_first_frame {
+                    ui.scroll_to_cursor(None);
+                    playlist.scrolled_first_frame = true;
+                }
+                response
             })
             .inner
     }
