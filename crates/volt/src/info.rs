@@ -4,21 +4,28 @@ use tracing::{info, subscriber::set_global_default};
 use tracing_subscriber::{fmt::layer, layer::SubscriberExt, Registry};
 
 fn get_desktop_environment() -> String {
-    if cfg!(target_os = "linux") {
+    #[cfg(target_os = "linux")]
+    {
         std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_else(|_| "None".to_string())
-    } else {
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
         "None".to_string()
     }
 }
 
 fn get_compositor() -> String {
-    if cfg!(target_os = "linux") {
+    #[cfg(target_os = "linux")]
+    {
         if std::env::var("WAYLAND_DISPLAY").is_ok() {
             "Wayland".to_string()
         } else {
             "X11".to_string()
         }
-    } else {
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
         "None".to_string()
     }
 }
@@ -26,38 +33,39 @@ fn get_compositor() -> String {
 fn get_cpu_info() -> String {
     #[cfg(target_os = "linux")]
     {
-        if let Ok(contents) = std::fs::read_to_string("/proc/cpuinfo") {
-            if let Some(line) = contents.lines().find(|line| line.starts_with("model name")) {
-                if let Some(cpu) = line.split(':').nth(1) {
-                    return cpu.trim().to_string();
-                }
-            }
-        }
+        std::fs::read_to_string("/proc/cpuinfo")
+            .ok()
+            .and_then(|contents| {
+                contents
+                    .lines()
+                    .find_map(|line| line.split_once(": ").filter(|(name, _)| name.starts_with("model name")).map(|(_, cpu)| cpu.to_string()))
+            })
+            .unwrap_or_else(|| "Unknown CPU".to_string())
     }
 
     #[cfg(target_os = "windows")]
     {
         use std::process::Command;
-        if let Ok(output) = Command::new("wmic").args(&["cpu", "get", "name"]).output() {
-            if let Ok(stdout) = String::from_utf8(output.stdout) {
-                if let Some(cpu) = stdout.lines().nth(1) {
-                    return cpu.trim().to_string();
-                }
-            }
-        }
+        Command::new("wmic")
+            .args(["cpu", "get", "name"])
+            .output()
+            .ok()
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .and_then(|stdout| stdout.lines().nth(1).map(str::to_string))
+            .unwrap_or_else(|| "Unknown CPU".to_string())
     }
 
     #[cfg(target_os = "macos")]
     {
         use std::process::Command;
-        if let Ok(output) = Command::new("sysctl").arg("-n").arg("machdep.cpu.brand_string").output() {
-            if let Ok(cpu) = String::from_utf8(output.stdout) {
-                return cpu.trim().to_string();
-            }
-        }
+        Command::new("sysctl")
+            .arg("-n")
+            .arg("machdep.cpu.brand_string")
+            .output()
+            .ok()
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .unwrap_or_else(|| "Unknown CPU".to_string())
     }
-
-    "Unknown CPU".to_string()
 }
 
 fn get_gpu_info() -> String {
@@ -97,16 +105,24 @@ fn get_gpu_info() -> String {
     "Unknown GPU".to_string()
 }
 pub fn dump() {
-    #[allow(unused_mut)]
-    let mut distro: String = "None".into();
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(release_file) = std::fs::read_to_string("/etc/os-release") {
-            if let Some(line) = release_file.lines().find(|l| l.starts_with("PRETTY_NAME=")) {
-                distro = line.split('=').nth(1).unwrap_or("Unknown").trim_matches('"').to_string();
-            }
+    let distro = {
+        #[cfg(not(target_os = "linux"))]
+        {
+            "None".to_string()
         }
-    }
+        #[cfg(target_os = "linux")]
+        {
+            std::fs::read_to_string("/etc/os-release")
+                .ok()
+                .and_then(|release_file| {
+                    release_file
+                        .lines()
+                        .find(|l| l.starts_with("PRETTY_NAME="))
+                        .map(|line| line.split('=').nth(1).unwrap_or("Unknown").trim_matches('"').to_string())
+                })
+                .unwrap_or_else(|| "None".to_string())
+        }
+    };
 
     println!("OS: {}", std::env::consts::OS);
     println!("Desktop Environment: {}", get_desktop_environment());
