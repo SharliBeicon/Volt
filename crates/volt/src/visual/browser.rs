@@ -20,8 +20,8 @@ use strum::Display;
 use tap::Pipe;
 
 use egui::{
-    emath::TSTransform, include_image, vec2, Button, CollapsingHeader, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, InnerResponse, LayerId, Margin, Order, PointerButton, Response,
-    RichText, ScrollArea, Sense, Stroke, Ui, Widget,
+    emath::TSTransform, include_image, vec2, Button, CollapsingHeader, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, InnerResponse, LayerId, Margin, Order, Response,
+    RichText, ScrollArea, Sense, Separator, Ui, Widget,
 };
 
 use crate::visual::ThemeColors;
@@ -192,7 +192,7 @@ impl Browser {
         }
     }
 
-    pub fn button<'a>(theme: &'a ThemeColors, selected: bool, text: &'a str, hovered: bool) -> impl Widget + use<'a> {
+    fn button<'a>(theme: &'a ThemeColors, selected: bool, text: &'a str, hovered: bool) -> impl Widget + use<'a> {
         move |ui: &mut Ui| {
             let color = if selected {
                 theme.browser_selected_button_fg
@@ -202,14 +202,12 @@ impl Browser {
                 theme.browser_unselected_button_fg
             };
             ui.allocate_ui(vec2(0., 24.), |ui| {
-                let response = ui.centered_and_justified(|ui| Button::new(RichText::new(text).size(14.).color(color)).frame(false).ui(ui));
-                response.response.union({
-                    let (response, painter) = ui.allocate_painter(vec2(0., 0.5), Sense::hover());
-                    painter.hline(response.rect.x_range(), response.rect.bottom(), Stroke::new(0.5, color));
-                    response
-                })
+                let button = ui.centered_and_justified(|ui| Button::new(RichText::new(text).size(14.).color(color)).frame(false).ui(ui)).inner;
+                ui.visuals_mut().widgets.noninteractive.bg_stroke.color = color;
+                ui.add(Separator::default().spacing(0.));
+                button
             })
-            .response
+            .inner
         }
     }
 
@@ -351,12 +349,9 @@ impl Browser {
 
 impl Widget for &mut Browser {
     fn ui(self, ui: &mut Ui) -> Response {
-        let (was_pressed, press_position) = ui
-            .ctx()
-            .input(|input_state| Some((input_state.pointer.button_released(PointerButton::Primary), Some(input_state.pointer.latest_pos()?))))
-            .unwrap_or_default();
-        ScrollArea::vertical()
+        ScrollArea::both()
             .drag_to_scroll(false)
+            .auto_shrink(false)
             .show_viewport(ui, |ui, _| {
                 egui::Frame::default().inner_margin(Margin::same(8.)).show(ui, |ui| {
                     ui.vertical(|ui| {
@@ -367,20 +362,18 @@ impl Widget for &mut Browser {
                                     .map(|(category, ui)| {
                                         let selected = self.selected_category == category;
                                         let string = category.to_string();
-                                        let button = Browser::button(&self.themes, selected, &string, self.other_category_hovered);
-                                        let mut response = ui.add(button);
-                                        let rect = response.rect;
+                                        let mut response = ui.add(Browser::button(&self.themes, selected, &string, self.other_category_hovered));
                                         if !selected {
-                                            self.other_category_hovered = response.hovered();
                                             response = response.on_hover_cursor(CursorIcon::PointingHand);
+                                            self.other_category_hovered = response.hovered();
                                         }
-                                        if press_position.is_some_and(|press_position| was_pressed && rect.contains(press_position)) {
+                                        if response.clicked() {
                                             self.selected_category = category;
                                         }
                                         response
                                     })
                                     .into_iter()
-                                    .reduce(|a, b| a.union(b))
+                                    .reduce(Response::bitor)
                                     .unwrap()
                             })
                         })

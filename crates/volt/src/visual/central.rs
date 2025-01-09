@@ -6,7 +6,7 @@ use std::ops::BitOr;
 use std::path::PathBuf;
 
 use eframe::egui;
-use egui::{hex_color, vec2, Color32, CursorIcon, Frame, Id, Margin, Rect, Response, Sense, Stroke, Ui, UiBuilder, Vec2, Widget};
+use egui::{hex_color, vec2, Color32, CursorIcon, Frame, Id, Margin, Rect, Response, ScrollArea, Sense, Separator, Stroke, Ui, UiBuilder, Vec2, Widget};
 use graph::{Graph, NodeData};
 use itertools::Itertools;
 use playlist::{Playlist, Time, TimeSignature};
@@ -55,6 +55,8 @@ mod playlist {
         pub tempo: f64,
         pub time: Time,
         pub pan_offset: Vec2,
+        /// The zoom factor for the playlist view. `[400.0 60.0]` means a measure is 400 pixels wide and a track is 60 pixels tall.
+        pub zoom: Vec2,
     }
 
     pub struct Clip {
@@ -109,48 +111,55 @@ impl Central {
                 tempo: 120.,
                 time: Time::default(),
                 pan_offset: Vec2::ZERO,
+                zoom: vec2(400., 60.),
             }),
         }
     }
 
     fn add_playlist(ui: &mut Ui, playlist: &mut Playlist) -> Response {
-        ui.vertical(|ui| {
-            let ui = ui as *mut Ui;
-            (0..=playlist.clips.iter().map(|clip| clip.track).max().unwrap_or_default())
-                .map(|y| {
-                    Frame::default()
-                        .inner_margin(Margin::same(8.))
-                        .show(
-                            {
-                                // SAFETY: The pointer was created by casting a reference, so it must be non-null, properly aligned, and valid. Its lifetime is restricted to the closure below and no
-                                // other pointer or reference accesses the memory it points to in the closure.
-                                unsafe { &mut *ui }
-                            },
-                            |ui| {
-                                let (response, painter) = ui.allocate_painter(vec2(ui.available_width(), 48.), Sense::hover());
-                                if let Some(path) = response.dnd_hover_payload::<PathBuf>() {
-                                    if let Some(duration) = File::open(&*path)
-                                        .ok()
-                                        .and_then(|file| Decoder::new(BufReader::new(file)).ok())
-                                        .and_then(|decoder| decoder.total_duration())
+        ui.spacing_mut().item_spacing = Vec2::ZERO;
+        ScrollArea::both()
+            .show(ui, |ui| {
+                ui.vertical(|ui| {
+                    let ui = ui as *mut Ui;
+                    (0..=playlist.clips.iter().map(|clip| clip.track).max().unwrap_or_default())
+                        .map(|y| {
+                            Frame::default()
+                                .inner_margin(Margin::same(8.))
+                                .fill(hex_color!("#101010"))
+                                .show(
                                     {
-                                        let width = duration.as_secs_f32();
-                                        painter.debug_rect(response.rect.tap_mut(|rect| rect.set_width(width)), Color32::RED, format!("{}", path.to_string_lossy()));
-                                    }
-                                };
-                                ui.label(format!("track {y}")).union(response)
-                            },
-                        )
-                        .response
+                                        // SAFETY: The pointer was created by casting a reference, so it must be non-null, properly aligned, and valid. Its lifetime is restricted to the closure below and no
+                                        // other pointer or reference accesses the memory it points to in the closure.
+                                        unsafe { &mut *ui }
+                                    },
+                                    |ui| {
+                                        let (response, painter) = ui.allocate_painter(vec2(ui.available_width(), playlist.zoom.y), Sense::hover());
+                                        if let Some(path) = response.dnd_hover_payload::<PathBuf>() {
+                                            if let Some(duration) = File::open(&*path)
+                                                .ok()
+                                                .and_then(|file| Decoder::new(BufReader::new(file)).ok())
+                                                .and_then(|decoder| decoder.total_duration())
+                                            {
+                                                let width = duration.as_secs_f32();
+                                                painter.debug_rect(response.rect.tap_mut(|rect| rect.set_width(width)), Color32::RED, format!("{}", path.to_string_lossy()));
+                                            }
+                                        };
+                                        ui.label(format!("track {y}")).union(response)
+                                    },
+                                )
+                                .response
+                        })
+                        .interleave_shortest(repeat_with(|| {
+                            // SAFETY: The pointer was created by casting a reference, so it must be non-null, properly aligned, and valid. Its lifetime is restricted to this closure and no other pointer or
+                            // reference accesses the memory it points to in the closure.
+                            unsafe { (*ui).add(Separator::default().spacing(0.)) }
+                        }))
+                        .reduce(Response::bitor)
                 })
-                .interleave_shortest(repeat_with(|| {
-                    // SAFETY: The pointer was created by casting a reference, so it must be non-null, properly aligned, and valid. Its lifetime is restricted to this closure and no other pointer or
-                    // reference accesses the memory it points to in the closure.
-                    unsafe { (*ui).separator() }
-                }))
-                .reduce(Response::bitor)
-        })
-        .response
+                .response
+            })
+            .inner
     }
 
     fn add_graph(ui: &mut Ui, Graph { nodes, pan_offset, drag_start_offset }: &mut Graph) -> Response {
@@ -184,13 +193,12 @@ impl Central {
                 if is_being_dragged {
                     let pos = ui.ctx().pointer_interact_pos().unwrap();
                     if let Some(drag_start_offset) = drag_start_offset {
-                        ui.ctx().set_cursor_icon(CursorIcon::Move);
                         *pan_offset = pos - rect.center() - *drag_start_offset;
                     } else {
                         *drag_start_offset = Some(pos - rect.center() - *pan_offset);
                     }
                 } else {
-                    ui.interact(rect, Id::new("graph background"), Sense::click_and_drag()).on_hover_cursor(CursorIcon::Grab);
+                    ui.interact(rect, Id::new("graph background"), Sense::click_and_drag()).on_hover_and_drag_cursor(CursorIcon::Grab);
                     *drag_start_offset = None;
                 }
                 for (id, node) in nodes.iter_mut() {
@@ -198,13 +206,13 @@ impl Central {
                     if is_being_dragged {
                         let pos = ui.ctx().pointer_interact_pos().unwrap();
                         if let Some(drag_start_offset) = node.drag_start_offset {
-                            ui.ctx().set_cursor_icon(CursorIcon::Move);
                             node.position = pos - rect.center() - drag_start_offset;
                         } else {
                             node.drag_start_offset = Some(pos - rect.center() - node.position);
                         }
                     } else {
-                        ui.interact(responses.get(id).unwrap().rect, Id::new(id), Sense::click_and_drag()).on_hover_cursor(CursorIcon::Move);
+                        ui.interact(responses.get(id).unwrap().rect, Id::new(id), Sense::click_and_drag())
+                            .on_hover_and_drag_cursor(CursorIcon::Move);
                         node.drag_start_offset = None;
                     }
                 }
