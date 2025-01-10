@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
-use std::iter::repeat_with;
 use std::ops::BitOr;
 use std::path::PathBuf;
 
@@ -160,7 +159,8 @@ impl Central {
                     .response;
                 let painter = ui.painter();
                 // FIXME: these x values do not take into account the `ScrollArea`'s x scroll position
-                for x in (0..10_u16).map(|index| f32::from(index) * playlist.zoom.x) {
+                // FIXME: and they also do not go forever
+                for x in (1..5_u16).map(|index| f32::from(index).mul_add(playlist.zoom.x, ui.clip_rect().min.x)) {
                     painter.vline(x, ui.clip_rect().y_range(), Stroke::new(1., hex_color!("#ff0000")));
                 }
                 if !playlist.scrolled_first_frame {
