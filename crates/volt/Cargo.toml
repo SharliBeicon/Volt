@@ -15,10 +15,8 @@ open = "5.3.2"
 rodio = "0.20.1"
 rustfft = "6.2.0"
 serde = "1.0.217"
-stable_try_trait_v2 = "1.75.1"
 strum = { version = "0.26.3", features = ["derive"] }
 tap = "1.0.1"
-unicode-truncate = "2.0.0"
 blerp = { path = "../blerp" }
 human-panic = "2.0.2"
 tracing = "0.1.41"

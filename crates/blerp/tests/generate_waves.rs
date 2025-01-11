@@ -4,6 +4,7 @@ use blerp::{
     processing::generation::{harmonics, sawtooth_wave, sine_wave, square_wave, triangle_wave, Harmonic},
     wavefile::WaveFile,
 };
+use itertools::Itertools;
 
 #[test]
 fn main() {
@@ -11,25 +12,54 @@ fn main() {
     const SAMPLE_RATE: u32 = 44100;
     remove_dir_all(env!("CARGO_TARGET_TMPDIR")).unwrap();
     create_dir(env!("CARGO_TARGET_TMPDIR")).unwrap();
-    WaveFile::from_samples([(0..44100).map(|sample| sine_wave(MIDDLE_C, 1.)(f64::from(sample) / f64::from(SAMPLE_RATE)))], SAMPLE_RATE)
+    let types = ["u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f32", "f64"];
+    for (index, from_samples) in [
+        WaveFile::from_samples::<u8, { size_of::<u8>() }, _>,
+        WaveFile::from_samples::<u16, { size_of::<u16>() }, _>,
+        WaveFile::from_samples::<u32, { size_of::<u32>() }, _>,
+        WaveFile::from_samples::<u64, { size_of::<u64>() }, _>,
+        WaveFile::from_samples::<i8, { size_of::<i8>() }, _>,
+        WaveFile::from_samples::<i16, { size_of::<i16>() }, _>,
+        WaveFile::from_samples::<i32, { size_of::<i32>() }, _>,
+        WaveFile::from_samples::<i64, { size_of::<i64>() }, _>,
+        WaveFile::from_samples::<f32, { size_of::<f32>() }, _>,
+        WaveFile::from_samples::<f64, { size_of::<f64>() }, _>,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let r#type = types[index];
+        from_samples(
+            [(0..44100).map(|sample| sine_wave(MIDDLE_C, 1.)(f64::from(sample) / f64::from(SAMPLE_RATE))).collect_vec()],
+            SAMPLE_RATE,
+        )
         .unwrap()
-        .write(&mut File::create(format!("{}/sine_wave.wav", env!("CARGO_TARGET_TMPDIR"))).unwrap())
+        .write(&mut File::create(format!("{}/sine_wave{type}.wav", env!("CARGO_TARGET_TMPDIR"))).unwrap())
         .unwrap();
-    WaveFile::from_samples([(0..44100).map(|sample| sawtooth_wave(MIDDLE_C, 1.)(f64::from(sample) / f64::from(SAMPLE_RATE)))], SAMPLE_RATE)
+        from_samples(
+            [(0..44100).map(|sample| sawtooth_wave(MIDDLE_C, 1.)(f64::from(sample) / f64::from(SAMPLE_RATE))).collect_vec()],
+            SAMPLE_RATE,
+        )
         .unwrap()
-        .write(&mut File::create(format!("{}/sawtooth_wave.wav", env!("CARGO_TARGET_TMPDIR"))).unwrap())
+        .write(&mut File::create(format!("{}/sawtooth_wave{type}.wav", env!("CARGO_TARGET_TMPDIR"))).unwrap())
         .unwrap();
-    WaveFile::from_samples([(0..44100).map(|sample| triangle_wave(MIDDLE_C, 1.)(f64::from(sample) / f64::from(SAMPLE_RATE)))], SAMPLE_RATE)
+        from_samples(
+            [(0..44100).map(|sample| triangle_wave(MIDDLE_C, 1.)(f64::from(sample) / f64::from(SAMPLE_RATE))).collect_vec()],
+            SAMPLE_RATE,
+        )
         .unwrap()
-        .write(&mut File::create(format!("{}/triangle_wave.wav", env!("CARGO_TARGET_TMPDIR"))).unwrap())
+        .write(&mut File::create(format!("{}/triangle_wave{type}.wav", env!("CARGO_TARGET_TMPDIR"))).unwrap())
         .unwrap();
-    WaveFile::from_samples([(0..44100).map(|sample| square_wave(MIDDLE_C, 1.)(f64::from(sample) / f64::from(SAMPLE_RATE)))], SAMPLE_RATE)
+        from_samples(
+            [(0..44100).map(|sample| square_wave(MIDDLE_C, 1.)(f64::from(sample) / f64::from(SAMPLE_RATE))).collect_vec()],
+            SAMPLE_RATE,
+        )
         .unwrap()
-        .write(&mut File::create(format!("{}/square_wave.wav", env!("CARGO_TARGET_TMPDIR"))).unwrap())
+        .write(&mut File::create(format!("{}/square_wave{type}.wav", env!("CARGO_TARGET_TMPDIR"))).unwrap())
         .unwrap();
+    }
 
-    // TODO test harmonic generation
-    WaveFile::from_samples(
+    WaveFile::from_samples::<f32, { size_of::<f32>() }, _>(
         [(0..44100).map(|sample| harmonics(MIDDLE_C, &[Harmonic::new(1., 0), Harmonic::new(1., 1)])(f64::from(sample) / f64::from(SAMPLE_RATE)))],
         SAMPLE_RATE,
     )
