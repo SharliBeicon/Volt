@@ -59,7 +59,7 @@ impl VoltApp {
             let mut fonts = FontDefinitions::default();
             fonts
                 .font_data
-                .insert(FONT_NAME.to_string(), FontData::from_static(include_bytes!("fonts/ibm-plex-mono/IBMPlexMono-Regular.ttf")));
+                .insert(FONT_NAME.to_string(), FontData::from_static(include_bytes!("fonts/ibm-plex-mono/IBMPlexMono-Regular.ttf")).into());
             fonts.families.insert(FontFamily::Proportional, vec![FONT_NAME.to_string()]);
             fonts
         });

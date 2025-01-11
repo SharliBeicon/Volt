@@ -21,15 +21,15 @@ fn main() {
         .unwrap();
     WaveFile::from_samples([(0..44100).map(|sample| sawtooth_wave(MIDDLE_C, 1.)(f64::from(sample) / f64::from(SAMPLE_RATE)))], SAMPLE_RATE)
         .unwrap()
-        .write(&mut File::create(format!("{}/sine_wave.wav", env!("CARGO_TARGET_TMPDIR"))).unwrap())
+        .write(&mut File::create(format!("{}/sawtooth_wave.wav", env!("CARGO_TARGET_TMPDIR"))).unwrap())
         .unwrap();
     WaveFile::from_samples([(0..44100).map(|sample| triangle_wave(MIDDLE_C, 1.)(f64::from(sample) / f64::from(SAMPLE_RATE)))], SAMPLE_RATE)
         .unwrap()
-        .write(&mut File::create(format!("{}/sine_wave.wav", env!("CARGO_TARGET_TMPDIR"))).unwrap())
+        .write(&mut File::create(format!("{}/triangle_wave.wav", env!("CARGO_TARGET_TMPDIR"))).unwrap())
         .unwrap();
     WaveFile::from_samples([(0..44100).map(|sample| square_wave(MIDDLE_C, 1.)(f64::from(sample) / f64::from(SAMPLE_RATE)))], SAMPLE_RATE)
         .unwrap()
-        .write(&mut File::create(format!("{}/sine_wave.wav", env!("CARGO_TARGET_TMPDIR"))).unwrap())
+        .write(&mut File::create(format!("{}/square_wave.wav", env!("CARGO_TARGET_TMPDIR"))).unwrap())
         .unwrap();
 
     // TODO test harmonic generation
