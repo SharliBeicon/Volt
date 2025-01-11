@@ -128,10 +128,8 @@ impl Central {
             .auto_shrink(false)
             .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
             .show(ui, |ui| {
-                ui.allocate_space(ui.available_size());
                 let response = ui
-                    .with_layout(Layout::top_down(Align::Min).with_main_align(Align::Max), |ui| {
-                        ui.allocate_space(vec2(0., playlist.zoom.y));
+                    .with_layout(Layout::top_down(Align::Min), |ui| {
                         (0..=playlist.clips.iter().map(|clip| clip.track).max().unwrap_or_default())
                             .rev()
                             .map(|y| {
@@ -157,11 +155,12 @@ impl Central {
                             .unwrap()
                     })
                     .response;
-                let painter = ui.painter();
-                // FIXME: these x values do not take into account the `ScrollArea`'s x scroll position
-                // FIXME: and they also do not go forever
-                for x in (1..5_u16).map(|index| f32::from(index).mul_add(playlist.zoom.x, ui.clip_rect().min.x)) {
-                    painter.vline(x, ui.clip_rect().y_range(), Stroke::new(1., hex_color!("#ff0000")));
+                #[allow(clippy::cast_possible_truncation, reason = "truncation is intentional")]
+                #[allow(clippy::cast_precision_loss, reason = "rounding errors are negligible because this is a visual effect")]
+                for x in (((ui.clip_rect().left() - response.rect.min.x) / playlist.zoom.x) as i32..((ui.clip_rect().right() - response.rect.min.x) / playlist.zoom.x).ceil() as i32)
+                    .map(|index| (index as f32).mul_add(playlist.zoom.x, response.rect.min.x))
+                {
+                    ui.painter().vline(x, ui.clip_rect().y_range(), Stroke::new(1., hex_color!("#ff0000")));
                 }
                 if !playlist.scrolled_first_frame {
                     ui.scroll_to_cursor(None);
