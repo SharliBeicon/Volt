@@ -12,18 +12,14 @@ fn main() {
     const SAMPLE_RATE: u32 = 44100;
     remove_dir_all(env!("CARGO_TARGET_TMPDIR")).unwrap();
     create_dir(env!("CARGO_TARGET_TMPDIR")).unwrap();
-    let types = ["u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f32", "f64"];
+    let types = ["u8", "i16", "i32", "i64", "f32", "f64"];
     for (index, from_samples) in [
-        WaveFile::from_samples::<u8, { size_of::<u8>() }, _>,
-        WaveFile::from_samples::<u16, { size_of::<u16>() }, _>,
-        WaveFile::from_samples::<u32, { size_of::<u32>() }, _>,
-        WaveFile::from_samples::<u64, { size_of::<u64>() }, _>,
-        WaveFile::from_samples::<i8, { size_of::<i8>() }, _>,
-        WaveFile::from_samples::<i16, { size_of::<i16>() }, _>,
-        WaveFile::from_samples::<i32, { size_of::<i32>() }, _>,
-        WaveFile::from_samples::<i64, { size_of::<i64>() }, _>,
-        WaveFile::from_samples::<f32, { size_of::<f32>() }, _>,
-        WaveFile::from_samples::<f64, { size_of::<f64>() }, _>,
+        WaveFile::from_samples::<u8, _>,
+        WaveFile::from_samples::<i16, _>,
+        WaveFile::from_samples::<i32, _>,
+        WaveFile::from_samples::<i64, _>,
+        WaveFile::from_samples::<f32, _>,
+        WaveFile::from_samples::<f64, _>,
     ]
     .into_iter()
     .enumerate()
@@ -59,7 +55,7 @@ fn main() {
         .unwrap();
     }
 
-    WaveFile::from_samples::<f32, { size_of::<f32>() }, _>(
+    WaveFile::from_samples::<f32, _>(
         [(0..44100).map(|sample| harmonics(MIDDLE_C, &[Harmonic::new(1., 0), Harmonic::new(1., 1)])(f64::from(sample) / f64::from(SAMPLE_RATE)))],
         SAMPLE_RATE,
     )

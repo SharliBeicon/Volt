@@ -6,7 +6,7 @@ use std::{
     num::NonZeroU16,
 };
 
-use cpal::{FromSample, Sample, I24, I48, U24, U48};
+use cpal::FromSample;
 use itertools::Itertools;
 use num::traits::ToBytes;
 use thiserror::Error;
@@ -43,64 +43,39 @@ pub enum FromSamplesError {
     TooManyChannels,
 }
 
-pub trait SampleExt<Unsigned = Self>: Sized + Sample + FromSample<f64> + Debug {
+pub trait WaveFileSample: FromSample<f64> + Sized + ToBytes
+where
+    <Self as ToBytes>::Bytes: IntoIterator<Item = u8>,
+{
     const SAMPLE_FORMAT: Format;
-    const BYTES_PER_SAMPLE: u16 = {
-        assert!(size_of::<Self>() <= u16::MAX as usize);
-        #[allow(clippy::cast_possible_truncation, reason = "we just checked it")]
-        {
-            size_of::<Self>() as u16
-        }
-    };
-
-    fn to_wav_sample(self) -> Unsigned;
+    #[must_use]
+    fn from_f64(value: f64) -> Self {
+        Self::from_sample_(value)
+    }
 }
 
-macro_rules! impl_sample_ext {
-    (@to_wav_sample) => {
-        fn to_wav_sample(self) -> Self {
-            self
-        }
-    };
-    (@to_wav_sample $ty:ty) => {
-        fn to_wav_sample(self) -> $ty {
-            use cpal::{Sample};
-            <$ty>::from_sample(self)
-        }
-    };
-    (@signed_impl) => {};
-    (@signed_impl $unsigned:ty, $ty:ty, $format:ident) => {
-        impl SampleExt for $ty {
-            const SAMPLE_FORMAT: Format = Format::$format;
-            impl_sample_ext!(@to_wav_sample);
-        }
-    };
-    ($($ty:ty, $format:ident $(,$unsigned:ty)?;)+) => {
-        $(
-            impl SampleExt $(< $unsigned >)? for $ty {
-                const SAMPLE_FORMAT: Format = Format::$format;
-                impl_sample_ext!(@to_wav_sample $($unsigned)?);
-            }
-            impl_sample_ext!(@signed_impl $($unsigned, $ty, $format)?);
-        )+
-    };
+impl WaveFileSample for u8 {
+    const SAMPLE_FORMAT: Format = Format::PulseCodeModulation;
 }
 
-impl_sample_ext! {
-    f32, FloatingPoint;
-    f64, FloatingPoint;
-    i8, PulseCodeModulation, u8;
-    i16, PulseCodeModulation;
-    i32, PulseCodeModulation;
-    i64, PulseCodeModulation;
-    u8, PulseCodeModulation;
-    u16, PulseCodeModulation, i16;
-    u32, PulseCodeModulation, i32;
-    u64, PulseCodeModulation, i64;
-    I24, PulseCodeModulation, U24;
-    I48, PulseCodeModulation, U48;
-    U24, PulseCodeModulation, I24;
-    U48, PulseCodeModulation, I48;
+impl WaveFileSample for i16 {
+    const SAMPLE_FORMAT: Format = Format::PulseCodeModulation;
+}
+
+impl WaveFileSample for i32 {
+    const SAMPLE_FORMAT: Format = Format::PulseCodeModulation;
+}
+
+impl WaveFileSample for i64 {
+    const SAMPLE_FORMAT: Format = Format::PulseCodeModulation;
+}
+
+impl WaveFileSample for f32 {
+    const SAMPLE_FORMAT: Format = Format::FloatingPoint;
+}
+
+impl WaveFileSample for f64 {
+    const SAMPLE_FORMAT: Format = Format::FloatingPoint;
 }
 
 impl<'a> WaveFile<'a> {
@@ -110,15 +85,12 @@ impl<'a> WaveFile<'a> {
     /// # Errors
     /// If the number of channels does not fit in a [`NonZeroU16`], because it is zero, or more than [`u16::MAX`], return [`FromSamplesError::TooManyChannels`].
     /// If the channels are not all the same length, return [`FromSamplesError::InequalChannelLength`].
-    pub fn from_samples<T: SampleExt + ToBytes<Bytes = [u8; BYTES]>, const BYTES: usize, C: IntoIterator<Item = f64>>(
-        channels: impl IntoIterator<Item = C>,
-        sample_rate: u32,
-    ) -> Result<Self, FromSamplesError> {
+    pub fn from_samples<T: WaveFileSample, C: IntoIterator<Item = f64>>(channels: impl IntoIterator<Item = C>, sample_rate: u32) -> Result<Self, FromSamplesError>
+    where
+        <T as ToBytes>::Bytes: IntoIterator<Item = u8>,
+    {
         let format = T::SAMPLE_FORMAT;
-        let mut channels = channels
-            .into_iter()
-            .map(|channel| channel.into_iter().map(|sample: f64| T::from_sample(sample).to_le_bytes()))
-            .collect_vec();
+        let mut channels = channels.into_iter().map(|channel| channel.into_iter().map(|sample| T::from_f64(sample).to_le_bytes())).collect_vec();
         let number_of_channels = u16::try_from(channels.len()).ok().and_then(NonZeroU16::new).ok_or(FromSamplesError::InequalChannelLength)?;
         let bytes_per_sample = u16::try_from(size_of::<T>()).expect("size of sample type is too large");
         let mut data = Vec::new();
