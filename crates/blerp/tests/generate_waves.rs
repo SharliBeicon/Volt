@@ -5,10 +5,6 @@ use blerp::{
     wavefile::WaveFile,
 };
 
-/// FIXME: this test produces some files which either
-/// - cannot be played (some of the `i64`/`u64` files (does wave support 64-bit samples?))
-/// - play the wrong sound (some of the `i8`/`u16`/`u32` files)
-/// - completely kill macOS's audio system (coreaudiod) (some of the square wave files)
 #[test]
 fn main() {
     const MIDDLE_C: f64 = 261.63;
@@ -38,9 +34,6 @@ fn main() {
         SAMPLE_RATE,
     )
     .unwrap()
-    .write(&mut File::create(format!("{}/harmonic_sin(x)+sin(2x)/2.wav", env!("CARGO_TARGET_TMPDIR"))).unwrap())
+    .write(&mut File::create(format!("{}/harmonic_sin(x)+0.5sin(2x).wav", env!("CARGO_TARGET_TMPDIR"))).unwrap())
     .unwrap();
-
-    // panic to make the test fail (because it does) - see FIXME above
-    panic!()
 }

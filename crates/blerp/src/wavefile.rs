@@ -35,13 +35,19 @@ pub enum FromSamplesError {
 
 impl WaveFile<'_> {
     /// Create a new [`WaveFile`] from an iterable of channels (where each channel is an iterable of samples) and a sample rate.
-    ///
     /// # Errors
-    ///
     /// If the number of channels does not fit in a [`NonZeroU16`], because it is zero, or more than [`u16::MAX`], return [`FromSamplesError::TooManyChannels`].
     /// If the channels are not all the same length, return [`FromSamplesError::InequalChannelLength`].
     pub fn from_samples<I: IntoIterator<Item = C>, C: IntoIterator<Item = f64>>(channels: I, sample_rate: u32) -> Result<Self, FromSamplesError> {
-        let mut channels = channels.into_iter().map(|channel| channel.into_iter().map(|sample: f64| sample.to_le_bytes())).collect_vec();
+        let mut channels = channels
+            .into_iter()
+            .map(|channel| {
+                channel.into_iter().map(|sample: f64| {
+                    #[allow(clippy::cast_possible_truncation, reason = "truncation is expected, these are audio samples")]
+                    (sample as f32).to_le_bytes()
+                })
+            })
+            .collect_vec();
         let number_of_channels = u16::try_from(channels.len()).ok().and_then(NonZeroU16::new).ok_or(FromSamplesError::InequalChannelLength)?;
         let mut data = Vec::new();
         loop {
@@ -76,8 +82,8 @@ impl WaveFile<'_> {
         writer.write_all(&self.channels.get().to_le_bytes())?;
         writer.write_all(&self.sample_rate.to_le_bytes())?;
         writer.write_all(&(self.sample_rate * u32::from(self.channels.get()) * 8).to_le_bytes())?;
-        writer.write_all(&8_u16.to_le_bytes())?;
-        writer.write_all(&64_u16.to_le_bytes())?;
+        writer.write_all(&4_u16.to_le_bytes())?;
+        writer.write_all(&32_u16.to_le_bytes())?;
         writer.write_all(&0_u16.to_le_bytes())?;
         writer.write_all(b"fact")?;
         writer.write_all(&4_u32.to_le_bytes())?;
