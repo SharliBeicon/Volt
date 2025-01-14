@@ -1,15 +1,17 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, num::NonZeroU64};
 use std::fs::File;
 use std::io::BufReader;
 use std::ops::BitOr;
 use std::path::PathBuf;
 
+use blerp::processing::effects::clip::Clip;
+use blerp::processing::effects::scale::Scale;
 use eframe::egui;
 use egui::{
     hex_color, scroll_area::ScrollBarVisibility, vec2, Align, Color32, CursorIcon, Frame, Id, Layout, Margin, Pos2, Rangef, Rect, Response, ScrollArea, Sense, Separator, Stroke, Ui, UiBuilder, Vec2,
     Widget,
 };
-use graph::{Graph, NodeData};
+use graph::{Graph, Node, NodeData, NodeId};
 use itertools::Itertools;
 use playlist::{Playlist, Time, TimeSignature};
 use rodio::{Decoder, Source};
@@ -120,6 +122,43 @@ impl Central {
                 zoom: vec2(400., 60.),
                 scrolled_first_frame: false,
             }),
+            // mode: Mode::Graph(Graph {
+            //     drag_start_offset: Some(vec2(0., 0.)),
+            //     pan_offset: vec2(0., 0.),
+            //     nodes: [
+            //         (
+            //             NodeId::Middle(NonZeroU64::new(1).unwrap()),
+            //             Node {
+            //                 data: NodeData::Middle {
+            //                     effect: Box::new(Clip::new_symmetrical(0.5)),
+            //                     output: Some(NodeId::Middle(NonZeroU64::new(2).unwrap())),
+            //                 },
+            //                 position: vec2(-200., -20.),
+            //                 drag_start_offset: None,
+            //             },
+            //         ),
+            //         (
+            //             NodeId::Middle(NonZeroU64::new(2).unwrap()),
+            //             Node {
+            //                 data: NodeData::Middle {
+            //                     effect: Box::new(Scale::new(2.)),
+            //                     output: Some(NodeId::Output),
+            //                 },
+            //                 position: vec2(-30., 80.),
+            //                 drag_start_offset: None,
+            //             },
+            //         ),
+            //         (
+            //             NodeId::Output,
+            //             Node {
+            //                 data: NodeData::Output,
+            //                 position: vec2(150., 10.),
+            //                 drag_start_offset: None,
+            //             },
+            //         ),
+            //     ]
+            //     .into(),
+            // })
         }
     }
 
