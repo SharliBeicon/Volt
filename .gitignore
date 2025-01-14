@@ -3,3 +3,6 @@ bungus*.wav
 Archive.tar.gz
 test_path
 .DS_Store
+
+# Temporary cargo config removal. Will need to replace with a build script.
+.cargo
