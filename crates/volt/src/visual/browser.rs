@@ -18,10 +18,11 @@ use std::{
 };
 use strum::Display;
 use tap::Pipe;
+use tracing::error;
 
 use egui::{
-    emath::TSTransform, include_image, vec2, Button, CollapsingHeader, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, InnerResponse, LayerId, Margin, Order, Response,
-    RichText, ScrollArea, Sense, Separator, Ui, Widget,
+    emath::TSTransform, include_image, vec2, Button, CollapsingHeader, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, InnerResponse, LayerId, Margin, Order, Response, RichText, ScrollArea,
+    Sense, Separator, Ui, Widget,
 };
 
 use crate::visual::ThemeColors;
@@ -319,22 +320,19 @@ impl Browser {
     }
 
     fn add_directory_contents(folder: &Path, ui: &mut Ui, preview: &mut Preview, theme: &ThemeColors, hovered_entry: &mut Option<PathBuf>, some_hovered: &mut bool) -> Option<Response> {
-        let directory_raw: Option<std::io::Result<ReadDir>> = Some(read_dir(folder));
-        match directory_raw {
-            Some(Ok(directory)) => {
-                directory
-                    .sorted_by(|a, b| {
-                        a.as_ref()
-                            .ok()
-                            .map(|entry| EntryKind::from(entry.path()))
-                            .cmp(&b.as_ref().ok().map(|entry| EntryKind::from(entry.path())))
-                            .then_with(|| a.as_ref().map(DirEntry::path).ok().cmp(&b.as_ref().map(DirEntry::path).ok()))
-                    })
-                    .map(|entry| Self::add_entry(&entry.unwrap().path(), theme, hovered_entry, preview, ui, some_hovered))
-                    .reduce(Response::bitor)
-            }
-            err => {
-                println!("Unexpected error while adding directory contents to browser: {:?}", err.unwrap());
+        match read_dir(folder) {
+            Ok(directory) => directory
+                .sorted_by(|a, b| {
+                    a.as_ref()
+                        .ok()
+                        .map(|entry| EntryKind::from(entry.path()))
+                        .cmp(&b.as_ref().ok().map(|entry| EntryKind::from(entry.path())))
+                        .then_with(|| a.as_ref().map(DirEntry::path).ok().cmp(&b.as_ref().map(DirEntry::path).ok()))
+                })
+                .map(|entry| Self::add_entry(&entry.unwrap().path(), theme, hovered_entry, preview, ui, some_hovered))
+                .reduce(Response::bitor),
+            Err(error) => {
+                error!("Unexpected error while adding directory contents to browser: {:?}", error);
                 None
             }
         }
