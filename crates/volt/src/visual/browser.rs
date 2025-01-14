@@ -5,7 +5,7 @@ use open::that_detached;
 use rodio::{Decoder, OutputStream, Sink, Source};
 use std::{
     borrow::Cow,
-    fs::{read_dir, DirEntry, File, ReadDir},
+    fs::{read_dir, DirEntry, File},
     io::BufReader,
     iter::Iterator,
     ops::BitOr,
@@ -22,7 +22,7 @@ use tracing::error;
 
 use egui::{
     emath::TSTransform, include_image, vec2, Button, CollapsingHeader, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, InnerResponse, LayerId, Margin, Order, Response, RichText, ScrollArea,
-    Sense, Separator, Ui, Widget,
+    Sense, Separator, Ui, UiBuilder, Widget,
 };
 
 use crate::visual::ThemeColors;
@@ -276,7 +276,7 @@ impl Browser {
                 let mut response = if ui.ctx().is_being_dragged(Id::new(path)) {
                     DragAndDrop::set_payload(ui.ctx(), path.to_path_buf());
                     let layer_id = LayerId::new(Order::Tooltip, Id::new(path));
-                    let response = ui.with_layer_id(layer_id, &mut add_contents).response;
+                    let response = ui.scope_builder(UiBuilder::new().layer_id(layer_id), &mut add_contents).response;
                     if let Some(pointer_pos) = ui.ctx().pointer_interact_pos() {
                         let delta = pointer_pos - response.rect.center();
                         ui.ctx().transform_layer_shapes(layer_id, TSTransform::from_translation(delta));

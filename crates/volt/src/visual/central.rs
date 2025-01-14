@@ -1,20 +1,15 @@
-use std::fs::File;
-use std::io::BufReader;
 use std::ops::BitOr;
 use std::path::PathBuf;
-use std::{collections::HashMap, num::NonZeroU64};
+use std::collections::HashMap;
 
-use blerp::processing::effects::scale::Scale;
 use eframe::egui;
 use egui::{
-    hex_color, scroll_area::ScrollBarVisibility, vec2, Align, Color32, CursorIcon, Frame, Id, Layout, Margin, Pos2, Rangef, Rect, Response, ScrollArea, Sense, Separator, Stroke, Ui, UiBuilder, Vec2,
+    hex_color, scroll_area::ScrollBarVisibility, vec2, Align, CursorIcon, Frame, Id, Layout, Rect, Response, ScrollArea, Sense, Stroke, Ui, UiBuilder, Vec2,
     Widget,
 };
-use graph::{Graph, Node, NodeData, NodeId};
+use graph::{Graph, NodeData};
 use itertools::Itertools;
 use playlist::{Clip, ClipData, Playlist, Tempo, Time, TimeSignature};
-use rodio::{Decoder, Source};
-use tap::Tap;
 
 mod graph {
     use blerp::processing::effects::Effect;
@@ -77,7 +72,7 @@ mod playlist {
             f64::from(self.beats_per_hectominute) / 100.
         }
 
-        pub fn beats_per_hectominute(&self) -> u32 {
+        pub const fn beats_per_hectominute(&self) -> u32 {
             self.beats_per_hectominute
         }
     }
