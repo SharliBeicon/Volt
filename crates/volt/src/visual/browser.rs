@@ -5,7 +5,8 @@ use open::that_detached;
 use rodio::{Decoder, OutputStream, Sink, Source};
 use std::{
     borrow::Cow,
-    fs::{read_dir, DirEntry, File},
+    collections::HashMap,
+    fs::{read_dir, DirEntry, File, ReadDir},
     io::BufReader,
     iter::Iterator,
     ops::BitOr,
@@ -145,7 +146,8 @@ pub struct Browser {
     pub open_paths: Vec<PathBuf>,
     pub preview: Preview,
     pub hovered_entry: Option<PathBuf>,
-    pub themes: ThemeColors,
+    pub theme: ThemeColors,
+    pub cached_entries: HashMap<PathBuf, ReadDir>,
 }
 
 impl Browser {
@@ -189,7 +191,8 @@ impl Browser {
                 }
             },
             hovered_entry: None,
-            themes,
+            theme: themes,
+            cached_entries: HashMap::new(),
         }
     }
 
@@ -217,39 +220,20 @@ impl Browser {
         egui::Frame::default()
             .inner_margin(Margin::same(8.))
             .show(ui, |ui| {
-                ui.vertical(|ui| {
-                    let Self {
-                        open_paths,
-                        preview,
-                        hovered_entry,
-                        themes,
-                        ..
-                    } = self;
-                    open_paths
-                        .iter()
-                        .map(|path| {
-                            let mut some_hovered = false;
-                            let response = Self::add_entry(path, themes, hovered_entry, preview, ui, &mut some_hovered);
-                            if !some_hovered {
-                                *hovered_entry = None;
-                            }
-                            response
-                        })
-                        .reduce(Response::bitor)
-                })
+                ui.vertical(|ui| self.open_paths.iter().cloned().collect_vec().into_iter().map(|path| self.add_entry(&path, ui)).reduce(Response::bitor))
             })
             .response
     }
 
-    fn add_entry(path: &Path, theme: &ThemeColors, hovered_entry: &mut Option<PathBuf>, preview: &mut Preview, ui: &mut Ui, some_hovered: &mut bool) -> Response {
+    fn add_entry(&mut self, path: &Path, ui: &mut Ui) -> Response {
         let kind = EntryKind::from(path);
         let name = path.file_name().map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
         let button = |hovered_entry: &Option<PathBuf>| {
             Button::new(RichText::new(&*name).color(match (Some(path) == hovered_entry.as_deref(), matches!(&name, &Cow::Owned(_))) {
-                (true, true) => theme.browser_unselected_hover_button_fg_invalid,
-                (true, false) => theme.browser_unselected_hover_button_fg,
-                (false, true) => theme.browser_unselected_button_fg_invalid,
-                (false, false) => theme.browser_unselected_button_fg,
+                (true, true) => self.theme.browser_unselected_hover_button_fg_invalid,
+                (true, false) => self.theme.browser_unselected_hover_button_fg,
+                (false, true) => self.theme.browser_unselected_button_fg_invalid,
+                (false, false) => self.theme.browser_unselected_button_fg,
             }))
             .frame(false)
         };
@@ -257,20 +241,22 @@ impl Browser {
             EntryKind::Audio => {
                 let mut add_contents = |ui: &mut Ui| {
                     ui.horizontal(|ui| {
-                        ui.add(Image::new(include_image!("../images/icons/audio.png"))).union(ui.add(button(hovered_entry))).pipe(|response| {
-                            let data = preview.data();
-                            if let Some(data @ PreviewData { length: Some(length), .. }) = preview.path.as_ref().filter(|preview_path| preview_path == &path).zip(data).map(|(_, data)| data) {
-                                response.union(ui.label(format!(
-                                    "{:>02}:{:>02} of {:>02}:{:>02}",
-                                    data.progress().as_secs() / 60,
-                                    data.progress().as_secs() % 60,
-                                    length.as_secs() / 60,
-                                    length.as_secs() % 60
-                                )))
-                            } else {
-                                response
-                            }
-                        })
+                        ui.add(Image::new(include_image!("../images/icons/audio.png")))
+                            .union(ui.add(button(&self.hovered_entry)))
+                            .pipe(|response| {
+                                let data = self.preview.data();
+                                if let Some(data @ PreviewData { length: Some(length), .. }) = self.preview.path.as_ref().filter(|preview_path| preview_path == &path).zip(data).map(|(_, data)| data) {
+                                    response.union(ui.label(format!(
+                                        "{:>02}:{:>02} of {:>02}:{:>02}",
+                                        data.progress().as_secs() / 60,
+                                        data.progress().as_secs() % 60,
+                                        length.as_secs() / 60,
+                                        length.as_secs() % 60
+                                    )))
+                                } else {
+                                    response
+                                }
+                            })
                     })
                 };
                 let mut response = if ui.ctx().is_being_dragged(Id::new(path)) {
@@ -290,10 +276,10 @@ impl Browser {
                 response.layer_id = ui.layer_id();
                 response
             }
-            EntryKind::File => Self::add_file(ui, button(hovered_entry)),
+            EntryKind::File => Self::add_file(ui, button(&self.hovered_entry)),
             EntryKind::Directory => {
                 let response = CollapsingHeader::new(name).id_salt(path).show(ui, |ui| {
-                    Self::add_directory_contents(path, ui, preview, theme, hovered_entry, some_hovered);
+                    self.add_directory_contents(path, ui);
                 });
                 response.header_response
             }
@@ -304,7 +290,7 @@ impl Browser {
                 EntryKind::Audio => {
                     // TODO: Proper preview implementation with cpal. This is temporary (or at least make it work well with a proper preview widget)
                     // Also, don't spawn a new thread - instead, dedicate a thread for preview
-                    preview.play_file(path.to_path_buf());
+                    self.preview.play_file(path.to_path_buf());
                 }
                 EntryKind::File => {
                     that_detached(path).unwrap();
@@ -313,23 +299,19 @@ impl Browser {
             }
         }
         if response.hovered() {
-            *some_hovered = true;
-            *hovered_entry = Some(path.to_path_buf());
+            self.hovered_entry = Some(path.to_path_buf());
         }
         response
     }
 
-    fn add_directory_contents(folder: &Path, ui: &mut Ui, preview: &mut Preview, theme: &ThemeColors, hovered_entry: &mut Option<PathBuf>, some_hovered: &mut bool) -> Option<Response> {
-        match read_dir(folder) {
+    fn add_directory_contents(&mut self, path: &Path, ui: &mut Ui) -> Option<Response> {
+        match read_dir(path) {
             Ok(directory) => directory
-                .sorted_by(|a, b| {
-                    a.as_ref()
-                        .ok()
-                        .map(|entry| EntryKind::from(entry.path()))
-                        .cmp(&b.as_ref().ok().map(|entry| EntryKind::from(entry.path())))
-                        .then_with(|| a.as_ref().map(DirEntry::path).ok().cmp(&b.as_ref().map(DirEntry::path).ok()))
+                .sorted_unstable_by_key(|entry| {
+                    let entry = entry.as_ref().ok().map(DirEntry::path);
+                    (entry.as_ref().map(EntryKind::from), entry)
                 })
-                .map(|entry| Self::add_entry(&entry.unwrap().path(), theme, hovered_entry, preview, ui, some_hovered))
+                .map(|entry| self.add_entry(&entry.unwrap().path(), ui))
                 .reduce(Response::bitor),
             Err(error) => {
                 error!("Unexpected error while adding directory contents to browser: {:?}", error);
@@ -368,7 +350,7 @@ impl Widget for &mut Browser {
                                     .map(|(category, ui)| {
                                         let selected = self.selected_category == category;
                                         let string = category.to_string();
-                                        let mut response = ui.add(Browser::button(&self.themes, selected, &string, self.other_category_hovered));
+                                        let mut response = ui.add(Browser::button(&self.theme, selected, &string, self.other_category_hovered));
                                         if !selected {
                                             response = response.on_hover_cursor(CursorIcon::PointingHand);
                                             self.other_category_hovered = response.hovered();
