@@ -1,10 +1,9 @@
-use std::{collections::HashMap, num::NonZeroU64};
 use std::fs::File;
 use std::io::BufReader;
 use std::ops::BitOr;
 use std::path::PathBuf;
+use std::{collections::HashMap, num::NonZeroU64};
 
-use blerp::processing::effects::clip::Clip;
 use blerp::processing::effects::scale::Scale;
 use eframe::egui;
 use egui::{
