@@ -11,7 +11,7 @@ use egui::{
 };
 use graph::{Graph, NodeData};
 use itertools::Itertools;
-use playlist::{Playlist, Time, TimeSignature};
+use playlist::{Clip, ClipData, Playlist, Tempo, Time, TimeSignature};
 use rodio::{Decoder, Source};
 use tap::Tap;
 
@@ -54,22 +54,41 @@ mod playlist {
     pub struct Playlist {
         pub clips: Vec<Clip>,
         pub time_signature: TimeSignature,
-        pub tempo: f64,
+        pub tempo: Tempo,
         pub time: Time,
         /// The zoom factor for the playlist view. `[400.0 60.0]` means a measure is 400 pixels wide and a track is 60 pixels tall.
         pub zoom: Vec2,
-        pub scrolled_first_frame: bool,
+    }
+
+    pub struct Tempo {
+        beats_per_hectominute: u32,
+    }
+
+    impl Tempo {
+        pub fn from_bpm(bpm: f64) -> Self {
+            #[allow(clippy::cast_sign_loss, reason = "bpm is always positive")]
+            #[allow(clippy::cast_possible_truncation, reason = "bpm only goes up to 999.99, so never truncates")]
+            let beats_per_hectominute = (bpm as u32 * 100).clamp(1, 99999);
+            Self { beats_per_hectominute }
+        }
+
+        pub fn bpm(&self) -> f64 {
+            f64::from(self.beats_per_hectominute) / 100.
+        }
+
+        pub fn beats_per_hectominute(&self) -> u32 {
+            self.beats_per_hectominute
+        }
     }
 
     pub struct Clip {
         pub start: Time,
-        pub length: Time,
         pub track: u32,
         pub data: ClipData,
     }
 
     pub enum ClipData {
-        FromFile { path: PathBuf },
+        Audio { path: PathBuf },
     }
 
     #[derive(Debug, Clone, Copy, Default)]
@@ -85,7 +104,7 @@ mod playlist {
 
     impl Playlist {
         pub fn now(&self) -> Duration {
-            Duration::from_secs_f64((f64::from(self.time.beats) / self.tempo).mul_add(60., self.time.plus))
+            Duration::from_secs_f64((f64::from(self.time.beats) / self.tempo.bpm()).mul_add(60., self.time.plus))
         }
 
         pub const fn measure(&self) -> u32 {
@@ -115,10 +134,9 @@ impl Central {
             mode: Mode::Playlist(Playlist {
                 clips: Vec::new(),
                 time_signature: TimeSignature { beats_per_measure: 4, beat_unit: 4 },
-                tempo: 120.,
+                tempo: Tempo::from_bpm(120.),
                 time: Time::default(),
                 zoom: vec2(400., 60.),
-                scrolled_first_frame: false,
             }),
         }
     }
@@ -126,6 +144,7 @@ impl Central {
     fn add_playlist(ui: &mut Ui, playlist: &mut Playlist) -> Response {
         ScrollArea::both()
             .auto_shrink(false)
+            .drag_to_scroll(false)
             .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
             .show(ui, |ui| {
                 let response = ui
@@ -138,14 +157,17 @@ impl Central {
                                     .show(ui, |ui| {
                                         let (response, painter) = ui.allocate_painter(vec2(f32::INFINITY, playlist.zoom.y), Sense::hover());
                                         if let Some(path) = response.dnd_hover_payload::<PathBuf>() {
-                                            if let Some(duration) = File::open(&*path)
-                                                .ok()
-                                                .and_then(|file| Decoder::new(BufReader::new(file)).ok())
-                                                .and_then(|decoder| decoder.total_duration())
-                                            {
-                                                let width = duration.as_secs_f32();
-                                                painter.debug_rect(response.rect.tap_mut(|rect| rect.set_width(width)), Color32::RED, format!("{}", path.to_string_lossy()));
-                                            }
+                                            #[allow(clippy::cast_precision_loss, reason = "rounding errors only occur at unreasonably large values")]
+                                            let beats = ((ui.input(|input| input.pointer.latest_pos().unwrap().x) - ui.clip_rect().left()) / playlist.zoom.x)
+                                                * playlist.time_signature.beats_per_measure as f32;
+                                            playlist.clips.push(Clip {
+                                                start: todo!(
+                                                    "figure out how to store where the start of a clip is, then write some code to
+                                                    compute a multiplier to convert this number of beats to that format"
+                                                ),
+                                                track: y,
+                                                data: ClipData::Audio { path: (*path).clone() },
+                                            });
                                         };
                                         ui.label(format!("track {y}")).union(response)
                                     })
@@ -157,14 +179,13 @@ impl Central {
                     .response;
                 #[allow(clippy::cast_possible_truncation, reason = "truncation is intentional")]
                 #[allow(clippy::cast_precision_loss, reason = "rounding errors are negligible because this is a visual effect")]
-                for x in (((ui.clip_rect().left() - response.rect.min.x) / playlist.zoom.x) as i32..((ui.clip_rect().right() - response.rect.min.x) / playlist.zoom.x).ceil() as i32)
-                    .map(|index| (index as f32).mul_add(playlist.zoom.x, response.rect.min.x))
-                {
+                for index in ((ui.clip_rect().left() - response.rect.min.x) / playlist.zoom.x) as i32..((ui.clip_rect().right() - response.rect.min.x) / playlist.zoom.x).ceil() as i32 {
+                    let x = (index as f32).mul_add(playlist.zoom.x, response.rect.min.x);
                     ui.painter().vline(x, ui.clip_rect().y_range(), Stroke::new(1., hex_color!("#ff0000")));
-                }
-                if !playlist.scrolled_first_frame {
-                    ui.scroll_to_cursor(None);
-                    playlist.scrolled_first_frame = true;
+                    for sub_index in 1..playlist.time_signature.beats_per_measure {
+                        let x = (sub_index as f32).mul_add(playlist.zoom.x / playlist.time_signature.beats_per_measure as f32, x);
+                        ui.painter().vline(x, ui.clip_rect().y_range(), Stroke::new(1., hex_color!("#00ff00")));
+                    }
                 }
                 response
             })

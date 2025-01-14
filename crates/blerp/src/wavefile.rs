@@ -6,7 +6,7 @@ use std::{
     num::NonZeroU16,
 };
 
-use cpal::FromSample;
+use cpal::{FromSample, I24, I48};
 use itertools::Itertools;
 use num::traits::ToBytes;
 use thiserror::Error;
