@@ -1,25 +1,25 @@
-#![warn(clippy::nursery, clippy::pedantic, clippy::undocumented_unsafe_blocks)]
 use blerp::utils::zip;
 use itertools::Itertools;
+use notify::{recommended_watcher, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use open::that_detached;
 use rodio::{Decoder, OutputStream, Sink, Source};
 use std::{
     borrow::Cow,
     collections::HashMap,
-    fs::{read_dir, DirEntry, File, ReadDir},
-    io::BufReader,
+    fs::{read_dir, DirEntry, File},
+    io::{self, BufReader},
     iter::Iterator,
     ops::BitOr,
     path::{Path, PathBuf},
     str::FromStr,
     string::ToString,
-    sync::mpsc::{channel, Receiver, Sender},
+    sync::mpsc::{channel, Receiver, Sender, TryRecvError},
     thread::spawn,
     time::{Duration, Instant},
 };
 use strum::Display;
 use tap::Pipe;
-use tracing::error;
+use tracing::{error, trace};
 
 use egui::{
     emath::TSTransform, include_image, vec2, Button, CollapsingHeader, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, InnerResponse, LayerId, Margin, Order, Response, RichText, ScrollArea,
@@ -147,11 +147,15 @@ pub struct Browser {
     pub preview: Preview,
     pub hovered_entry: Option<PathBuf>,
     pub theme: ThemeColors,
-    pub cached_entries: HashMap<PathBuf, ReadDir>,
+    pub cached_entries: HashMap<PathBuf, io::Result<Vec<PathBuf>>>,
+    pub watcher: RecommendedWatcher,
+    pub watcher_rx: Receiver<notify::Result<Event>>,
 }
 
 impl Browser {
     pub fn new(themes: ThemeColors) -> Self {
+        let (watcher_tx, watcher_rx) = channel();
+        let watcher = recommended_watcher(watcher_tx).unwrap();
         Self {
             selected_category: Category::Files,
             other_category_hovered: false,
@@ -193,6 +197,8 @@ impl Browser {
             hovered_entry: None,
             theme: themes,
             cached_entries: HashMap::new(),
+            watcher,
+            watcher_rx,
         }
     }
 
@@ -262,7 +268,7 @@ impl Browser {
                 let mut response = if ui.ctx().is_being_dragged(Id::new(path)) {
                     DragAndDrop::set_payload(ui.ctx(), path.to_path_buf());
                     let layer_id = LayerId::new(Order::Tooltip, Id::new(path));
-                    let response = ui.scope_builder(UiBuilder::new().layer_id(layer_id), &mut add_contents).response;
+                    let response = ui.scope_builder(UiBuilder::new().layer_id(layer_id), add_contents).response;
                     if let Some(pointer_pos) = ui.ctx().pointer_interact_pos() {
                         let delta = pointer_pos - response.rect.center();
                         ui.ctx().transform_layer_shapes(layer_id, TSTransform::from_translation(delta));
@@ -305,14 +311,46 @@ impl Browser {
     }
 
     fn add_directory_contents(&mut self, path: &Path, ui: &mut Ui) -> Option<Response> {
-        match read_dir(path) {
-            Ok(directory) => directory
-                .sorted_unstable_by_key(|entry| {
-                    let entry = entry.as_ref().ok().map(DirEntry::path);
-                    (entry.as_ref().map(EntryKind::from), entry)
-                })
-                .map(|entry| self.add_entry(&entry.unwrap().path(), ui))
-                .reduce(Response::bitor),
+        match self.watcher_rx.try_recv() {
+            Ok(event) => {
+                let event = event.unwrap();
+                match event.kind {
+                    EventKind::Access(_) => {}
+                    _ => {
+                        for path in event.paths.iter().map(|path| if path.is_dir() { path } else { path.parent().unwrap() }) {
+                            self.cached_entries.remove(path);
+                        }
+                    }
+                }
+            }
+            Err(TryRecvError::Disconnected) => {
+                panic!()
+            }
+            Err(TryRecvError::Empty) => {}
+        }
+        match self.cached_entries.entry(path.to_path_buf()).or_insert_with(|| {
+            trace!("entry cache miss for {:?}", path);
+            self.watcher.watch(path, RecursiveMode::NonRecursive).unwrap();
+            read_dir(path).and_then(|entries| {
+                entries
+                    .map(|entry| {
+                        {
+                            match entry {
+                                Ok(ref x) => Ok(x),
+                                Err(x) => Err(x),
+                            }
+                        }
+                        .map(DirEntry::path)
+                    })
+                    .sorted_unstable_by(|a, b| {
+                        let a = a.as_ref().ok();
+                        let b = b.as_ref().ok();
+                        Ord::cmp(&(a.map(EntryKind::from), a), &(b.map(EntryKind::from), b))
+                    })
+                    .try_collect()
+            })
+        }) {
+            Ok(directory) => directory.iter().cloned().collect_vec().into_iter().map(|path| self.add_entry(&path, ui)).reduce(Response::bitor),
             Err(error) => {
                 error!("Unexpected error while adding directory contents to browser: {:?}", error);
                 None

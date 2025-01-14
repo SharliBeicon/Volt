@@ -1,7 +1,7 @@
 use std::{env::args, fs::File, io::stderr, ops::ControlFlow, path::Path};
 
 use tracing::{info, subscriber::set_global_default};
-use tracing_subscriber::{fmt::layer, layer::SubscriberExt, Registry};
+use tracing_subscriber::{fmt::layer, layer::SubscriberExt, EnvFilter, Registry};
 
 fn get_desktop_environment() -> String {
     #[cfg(target_os = "linux")]
@@ -143,7 +143,13 @@ pub fn handle_args() -> ControlFlow<(), ()> {
     if args().any(|arg| arg == "--verbose") {
         let path = Path::new("debug.log");
         let file = File::create(path).unwrap();
-        set_global_default(Registry::default().with(layer().with_writer(stderr)).with(layer().with_ansi(false).with_writer(file))).unwrap();
+        set_global_default(
+            Registry::default()
+                .with(layer().with_writer(stderr))
+                .with(layer().with_ansi(false).with_writer(file))
+                .with(EnvFilter::from_default_env()),
+        )
+        .unwrap();
         info!(
             "Running Volt in verbose mode! Various debug logs will now get logged. For convenience, a file at `{}` is also being written to.",
             path.canonicalize().unwrap().display()
