@@ -237,7 +237,7 @@ impl Central {
                                                 continue;
                                             }
                                             let left = (start.beats() as f32 / playlist.time_signature.beats_per_measure as f32).mul_add(playlist.zoom.x, response.rect.min.x);
-                                            let width = dbg!(data.duration()).as_secs_f32() * playlist.tempo.bps() as f32 / playlist.time_signature.beats_per_measure as f32 * playlist.zoom.x;
+                                            let width = data.duration().as_secs_f32() * playlist.tempo.bps() as f32 / playlist.time_signature.beats_per_measure as f32 * playlist.zoom.x;
                                             painter.rect(
                                                 Rect::from_min_size(pos2(left, painter.clip_rect().top()), vec2(width, painter.clip_rect().height())),
                                                 4.,
