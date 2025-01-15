@@ -1,15 +1,14 @@
+use std::collections::HashMap;
 use std::ops::BitOr;
 use std::path::PathBuf;
-use std::collections::HashMap;
 
 use eframe::egui;
 use egui::{
-    hex_color, scroll_area::ScrollBarVisibility, vec2, Align, CursorIcon, Frame, Id, Layout, Rect, Response, ScrollArea, Sense, Stroke, Ui, UiBuilder, Vec2,
-    Widget,
+    hex_color, pos2, scroll_area::ScrollBarVisibility, vec2, Align, Align2, Color32, CursorIcon, Frame, Id, InputState, Layout, Rect, Response, ScrollArea, Sense, Stroke, Ui, UiBuilder, Vec2, Widget,
 };
 use graph::{Graph, NodeData};
 use itertools::Itertools;
-use playlist::{Clip, ClipData, Playlist, Tempo, Time, TimeSignature};
+use playlist::{Clip, ClipData, Playlist, Time};
 
 mod graph {
     use blerp::processing::effects::Effect;
@@ -45,8 +44,9 @@ mod graph {
 mod playlist {
     use std::{path::PathBuf, time::Duration};
 
-    use egui::Vec2;
+    use egui::{vec2, Vec2};
 
+    #[derive(Debug)]
     pub struct Playlist {
         pub clips: Vec<Clip>,
         pub time_signature: TimeSignature,
@@ -54,10 +54,46 @@ mod playlist {
         pub time: Time,
         /// The zoom factor for the playlist view. `[400.0 60.0]` means a measure is 400 pixels wide and a track is 60 pixels tall.
         pub zoom: Vec2,
+        pub snapping: Snapping,
     }
 
+    impl Default for Playlist {
+        fn default() -> Self {
+            Self {
+                clips: Vec::new(),
+                time_signature: TimeSignature::default(),
+                tempo: Tempo::default(),
+                time: Time::default(),
+                zoom: vec2(400., 60.),
+                snapping: Snapping::default(),
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub enum Snapping {
+        None,
+        /// Snaps to the nearest beat divided by the given number, normally a power of 2.
+        Beats {
+            divisor: u32,
+        },
+    }
+
+    impl Default for Snapping {
+        fn default() -> Self {
+            Self::Beats { divisor: 4 }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
     pub struct Tempo {
         beats_per_hectominute: u32,
+    }
+
+    impl Default for Tempo {
+        fn default() -> Self {
+            Self::from_bpm(120.)
+        }
     }
 
     impl Tempo {
@@ -72,39 +108,76 @@ mod playlist {
             f64::from(self.beats_per_hectominute) / 100.
         }
 
+        pub fn bps(&self) -> f64 {
+            self.bpm() / 60.
+        }
+
         pub const fn beats_per_hectominute(&self) -> u32 {
             self.beats_per_hectominute
         }
     }
 
+    #[derive(Debug, Clone)]
     pub struct Clip {
         pub start: Time,
         pub track: u32,
         pub data: ClipData,
     }
 
+    #[derive(Debug, Clone)]
     pub enum ClipData {
         Audio { path: PathBuf },
     }
 
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct Time {
-        beats: u32,
-        plus: f64,
+    impl ClipData {
+        pub fn duration(&self) -> Duration {
+            match self {
+                Self::Audio { path } => {
+                    // TODO calculate the duration of the audio file and cache it
+                    Duration::from_secs_f32(0.5)
+                }
+            }
+        }
     }
 
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct Time {
+        beats: f64,
+    }
+
+    impl Time {
+        pub fn from_beats(beats: f64) -> Option<Self> {
+            (beats > 0.).then_some(Self { beats })
+        }
+
+        pub const fn beats(self) -> f64 {
+            self.beats
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
     pub struct TimeSignature {
         pub beats_per_measure: u32,
         pub beat_unit: u32,
     }
 
+    impl Default for TimeSignature {
+        fn default() -> Self {
+            Self { beats_per_measure: 4, beat_unit: 4 }
+        }
+    }
+
     impl Playlist {
         pub fn now(&self) -> Duration {
-            Duration::from_secs_f64((f64::from(self.time.beats) / self.tempo.bpm()).mul_add(60., self.time.plus))
+            Duration::from_secs_f64(self.time.beats / self.tempo.bpm() * 60.)
         }
 
         pub const fn measure(&self) -> u32 {
-            self.time.beats / self.time_signature.beats_per_measure
+            #[allow(clippy::cast_possible_truncation, reason = "truncation is intentional")]
+            #[allow(clippy::cast_sign_loss, reason = "beats cannot be negative")]
+            {
+                self.time.beats as u32 / self.time_signature.beats_per_measure
+            }
         }
     }
 }
@@ -112,6 +185,12 @@ mod playlist {
 enum Mode {
     Playlist(Playlist),
     Graph(Graph),
+}
+
+impl Default for Mode {
+    fn default() -> Self {
+        Self::Playlist(Playlist::default())
+    }
 }
 
 pub struct Central {
@@ -127,13 +206,7 @@ impl Default for Central {
 impl Central {
     pub fn new() -> Self {
         Self {
-            mode: Mode::Playlist(Playlist {
-                clips: Vec::new(),
-                time_signature: TimeSignature { beats_per_measure: 4, beat_unit: 4 },
-                tempo: Tempo::from_bpm(120.),
-                time: Time::default(),
-                zoom: vec2(400., 60.),
-            }),
+            mode: Mode::Playlist(Playlist::default()),
             // mode: Mode::Graph(Graph {
             //     drag_start_offset: Some(vec2(0., 0.)),
             //     pan_offset: vec2(0., 0.),
@@ -175,34 +248,56 @@ impl Central {
     }
 
     fn add_playlist(ui: &mut Ui, playlist: &mut Playlist) -> Response {
+        playlist.zoom = playlist.zoom * ui.input(InputState::zoom_delta_2d);
+        playlist.zoom += ui.input(|input| input.modifiers.alt.then_some(input.smooth_scroll_delta)).unwrap_or_default();
+        playlist.zoom = playlist.zoom.max(vec2(50., 50.));
         ScrollArea::both()
             .auto_shrink(false)
             .drag_to_scroll(false)
+            .enable_scrolling(ui.input(|input| !input.modifiers.alt))
             .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
             .show(ui, |ui| {
                 let response = ui
                     .with_layout(Layout::top_down(Align::Min), |ui| {
-                        (0..=playlist.clips.iter().map(|clip| clip.track).max().unwrap_or_default())
+                        (0..=playlist.clips.iter().map(|clip| clip.track + 1).max().unwrap_or_default())
                             .rev()
                             .map(|y| {
                                 Frame::default()
                                     .fill(hex_color!("#101010"))
                                     .show(ui, |ui| {
                                         let (response, painter) = ui.allocate_painter(vec2(f32::INFINITY, playlist.zoom.y), Sense::hover());
-                                        if let Some(path) = response.dnd_hover_payload::<PathBuf>() {
-                                            #[allow(clippy::cast_precision_loss, reason = "rounding errors only occur at unreasonably large values")]
-                                            let beats = ((ui.input(|input| input.pointer.latest_pos().unwrap().x) - ui.clip_rect().left()) / playlist.zoom.x)
-                                                * playlist.time_signature.beats_per_measure as f32;
-                                            playlist.clips.push(Clip {
-                                                start: todo!(
-                                                    "figure out how to store where the start of a clip is, then write some code to
-                                                    compute a multiplier to convert this number of beats to that format"
-                                                ),
-                                                track: y,
-                                                data: ClipData::Audio { path: (*path).clone() },
-                                            });
+                                        if let Some(path) = response.dnd_release_payload::<PathBuf>() {
+                                            if let Some(start) = Time::from_beats(
+                                                f64::from((ui.input(|input| input.pointer.latest_pos().unwrap().x) - response.rect.min.x) / playlist.zoom.x)
+                                                    * f64::from(playlist.time_signature.beats_per_measure),
+                                            ) {
+                                                playlist.clips.push(Clip {
+                                                    start,
+                                                    track: y,
+                                                    data: ClipData::Audio { path: (*path).clone() },
+                                                });
+                                                dbg!(&playlist.clips);
+                                            }
                                         };
-                                        ui.label(format!("track {y}")).union(response)
+                                        #[allow(clippy::cast_precision_loss, reason = "rounding errors are negligible because this is a visual effect")]
+                                        #[allow(clippy::cast_possible_truncation, reason = "truncation only occurs at unreasonably high numbers")]
+                                        for Clip { start, track, data } in &playlist.clips {
+                                            if track != &y {
+                                                continue;
+                                            }
+                                            let left = (start.beats() as f32 / playlist.time_signature.beats_per_measure as f32).mul_add(playlist.zoom.x, response.rect.min.x);
+                                            let width = data.duration().as_secs_f32() * playlist.tempo.bps() as f32 / playlist.time_signature.beats_per_measure as f32 * playlist.zoom.x;
+                                            let rect = Rect::from_min_size(pos2(left, painter.clip_rect().top()), vec2(width, painter.clip_rect().height()));
+                                            painter.rect(rect, 4., Color32::RED, Stroke::new(2., Color32::GREEN));
+                                            painter.debug_text(
+                                                rect.left_top(),
+                                                Align2::LEFT_TOP,
+                                                Color32::BLUE,
+                                                match data {
+                                                    ClipData::Audio { path } => path.file_name().unwrap().to_string_lossy(),
+                                                },
+                                            );
+                                        }
                                     })
                                     .response
                             })
