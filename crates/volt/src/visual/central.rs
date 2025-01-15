@@ -3,7 +3,9 @@ use std::ops::BitOr;
 use std::path::PathBuf;
 
 use eframe::egui;
-use egui::{hex_color, pos2, scroll_area::ScrollBarVisibility, vec2, Align, Color32, CursorIcon, Frame, Id, Layout, Rect, Response, ScrollArea, Sense, Stroke, Ui, UiBuilder, Vec2, Widget};
+use egui::{
+    hex_color, pos2, scroll_area::ScrollBarVisibility, vec2, Align, Color32, CursorIcon, Frame, Id, InputState, Layout, Rect, Response, ScrollArea, Sense, Stroke, Ui, UiBuilder, Vec2, Widget,
+};
 use graph::{Graph, NodeData};
 use itertools::Itertools;
 use playlist::{Clip, ClipData, Playlist, Tempo, Time, TimeSignature};
@@ -246,14 +248,18 @@ impl Central {
     }
 
     fn add_playlist(ui: &mut Ui, playlist: &mut Playlist) -> Response {
+        playlist.zoom = playlist.zoom * ui.input(InputState::zoom_delta_2d);
+        playlist.zoom += ui.input(|input| input.modifiers.alt.then_some(input.smooth_scroll_delta)).unwrap_or_default();
+        playlist.zoom = playlist.zoom.max(vec2(50., 50.));
         ScrollArea::both()
             .auto_shrink(false)
             .drag_to_scroll(false)
+            .enable_scrolling(ui.input(|input| !input.modifiers.alt))
             .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
             .show(ui, |ui| {
                 let response = ui
                     .with_layout(Layout::top_down(Align::Min), |ui| {
-                        (0..=playlist.clips.iter().map(|clip| clip.track).max().unwrap_or_default())
+                        (0..=playlist.clips.iter().map(|clip| clip.track + 1).max().unwrap_or_default())
                             .rev()
                             .map(|y| {
                                 Frame::default()
@@ -288,7 +294,6 @@ impl Central {
                                                 Stroke::new(2., Color32::GREEN),
                                             );
                                         }
-                                        ui.label(format!("track {y}")).union(response)
                                     })
                                     .response
                             })
