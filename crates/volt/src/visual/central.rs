@@ -42,8 +42,9 @@ mod graph {
 mod playlist {
     use std::{path::PathBuf, time::Duration};
 
-    use egui::Vec2;
+    use egui::{vec2, Vec2};
 
+    #[derive(Debug)]
     pub struct Playlist {
         pub clips: Vec<Clip>,
         pub time_signature: TimeSignature,
@@ -51,10 +52,46 @@ mod playlist {
         pub time: Time,
         /// The zoom factor for the playlist view. `[400.0 60.0]` means a measure is 400 pixels wide and a track is 60 pixels tall.
         pub zoom: Vec2,
+        pub snapping: Snapping,
     }
 
+    impl Default for Playlist {
+        fn default() -> Self {
+            Self {
+                clips: Vec::new(),
+                time_signature: TimeSignature::default(),
+                tempo: Tempo::default(),
+                time: Time::default(),
+                zoom: vec2(400., 60.),
+                snapping: Snapping::default(),
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub enum Snapping {
+        None,
+        /// Snaps to the nearest beat divided by the given number, normally a power of 2.
+        Beats {
+            divisor: u32,
+        },
+    }
+
+    impl Default for Snapping {
+        fn default() -> Self {
+            Self::Beats { divisor: 4 }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
     pub struct Tempo {
         beats_per_hectominute: u32,
+    }
+
+    impl Default for Tempo {
+        fn default() -> Self {
+            Self::from_bpm(120.)
+        }
     }
 
     impl Tempo {
@@ -116,10 +153,16 @@ mod playlist {
         }
     }
 
-    #[derive(Debug, Clone, Copy, Default)]
+    #[derive(Debug, Clone, Copy)]
     pub struct TimeSignature {
         pub beats_per_measure: u32,
         pub beat_unit: u32,
+    }
+
+    impl Default for TimeSignature {
+        fn default() -> Self {
+            Self { beats_per_measure: 4, beat_unit: 4 }
+        }
     }
 
     impl Playlist {
@@ -142,6 +185,12 @@ enum Mode {
     Graph(Graph),
 }
 
+impl Default for Mode {
+    fn default() -> Self {
+        Self::Playlist(Playlist::default())
+    }
+}
+
 pub struct Central {
     mode: Mode,
 }
@@ -155,13 +204,7 @@ impl Default for Central {
 impl Central {
     pub fn new() -> Self {
         Self {
-            mode: Mode::Playlist(Playlist {
-                clips: Vec::new(),
-                time_signature: TimeSignature { beats_per_measure: 4, beat_unit: 4 },
-                tempo: Tempo::from_bpm(120.),
-                time: Time::default(),
-                zoom: vec2(400., 60.),
-            }),
+            mode: Mode::Playlist(Playlist::default()),
             // mode: Mode::Graph(Graph {
             //     drag_start_offset: Some(vec2(0., 0.)),
             //     pan_offset: vec2(0., 0.),
