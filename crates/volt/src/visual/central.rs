@@ -4,11 +4,11 @@ use std::path::PathBuf;
 
 use eframe::egui;
 use egui::{
-    hex_color, pos2, scroll_area::ScrollBarVisibility, vec2, Align, Color32, CursorIcon, Frame, Id, InputState, Layout, Rect, Response, ScrollArea, Sense, Stroke, Ui, UiBuilder, Vec2, Widget,
+    hex_color, pos2, scroll_area::ScrollBarVisibility, vec2, Align, Align2, Color32, CursorIcon, Frame, Id, InputState, Layout, Rect, Response, ScrollArea, Sense, Stroke, Ui, UiBuilder, Vec2, Widget,
 };
 use graph::{Graph, NodeData};
 use itertools::Itertools;
-use playlist::{Clip, ClipData, Playlist, Tempo, Time, TimeSignature};
+use playlist::{Clip, ClipData, Playlist, Time};
 
 mod graph {
     use blerp::processing::effects::Effect;
@@ -287,11 +287,15 @@ impl Central {
                                             }
                                             let left = (start.beats() as f32 / playlist.time_signature.beats_per_measure as f32).mul_add(playlist.zoom.x, response.rect.min.x);
                                             let width = data.duration().as_secs_f32() * playlist.tempo.bps() as f32 / playlist.time_signature.beats_per_measure as f32 * playlist.zoom.x;
-                                            painter.rect(
-                                                Rect::from_min_size(pos2(left, painter.clip_rect().top()), vec2(width, painter.clip_rect().height())),
-                                                4.,
-                                                Color32::RED,
-                                                Stroke::new(2., Color32::GREEN),
+                                            let rect = Rect::from_min_size(pos2(left, painter.clip_rect().top()), vec2(width, painter.clip_rect().height()));
+                                            painter.rect(rect, 4., Color32::RED, Stroke::new(2., Color32::GREEN));
+                                            painter.debug_text(
+                                                rect.left_top(),
+                                                Align2::LEFT_TOP,
+                                                Color32::BLUE,
+                                                match data {
+                                                    ClipData::Audio { path } => path.file_name().unwrap().to_string_lossy(),
+                                                },
                                             );
                                         }
                                     })

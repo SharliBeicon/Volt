@@ -7,10 +7,10 @@ pub fn navbar() -> impl Widget {
             egui::Frame::default().show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.add(Image::new(include_image!("../images/icons/navbar-icon.svg")).fit_to_exact_size(Vec2::splat(40.)))
-                        // .union(
-                        //     ui.vertical(|ui| ui.label(RichText::new("Volt").size(20.).color(Color32::WHITE)).union(ui.label("Version INDEV")))
-                        //         .response,
-                        // )
+                    // .union(
+                    //     ui.vertical(|ui| ui.label(RichText::new("Volt").size(20.).color(Color32::WHITE)).union(ui.label("Version INDEV")))
+                    //         .response,
+                    // )
                 })
             })
         })
