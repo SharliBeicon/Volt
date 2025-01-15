@@ -1,12 +1,9 @@
+use std::collections::HashMap;
 use std::ops::BitOr;
 use std::path::PathBuf;
-use std::collections::HashMap;
 
 use eframe::egui;
-use egui::{
-    hex_color, scroll_area::ScrollBarVisibility, vec2, Align, CursorIcon, Frame, Id, Layout, Rect, Response, ScrollArea, Sense, Stroke, Ui, UiBuilder, Vec2,
-    Widget,
-};
+use egui::{hex_color, pos2, scroll_area::ScrollBarVisibility, vec2, Align, Color32, CursorIcon, Frame, Id, Layout, Rect, Response, ScrollArea, Sense, Stroke, Ui, UiBuilder, Vec2, Widget};
 use graph::{Graph, NodeData};
 use itertools::Itertools;
 use playlist::{Clip, ClipData, Playlist, Tempo, Time, TimeSignature};
@@ -72,27 +69,54 @@ mod playlist {
             f64::from(self.beats_per_hectominute) / 100.
         }
 
+        pub fn bps(&self) -> f64 {
+            self.bpm() / 60.
+        }
+
         pub const fn beats_per_hectominute(&self) -> u32 {
             self.beats_per_hectominute
         }
     }
 
+    #[derive(Debug, Clone)]
     pub struct Clip {
         pub start: Time,
         pub track: u32,
         pub data: ClipData,
     }
 
+    #[derive(Debug, Clone)]
     pub enum ClipData {
         Audio { path: PathBuf },
     }
 
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct Time {
-        beats: u32,
-        plus: f64,
+    impl ClipData {
+        pub fn duration(&self) -> Duration {
+            match self {
+                Self::Audio { path } => {
+                    // TODO calculate the duration of the audio file and cache it
+                    Duration::from_secs_f32(0.5)
+                }
+            }
+        }
     }
 
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct Time {
+        beats: f64,
+    }
+
+    impl Time {
+        pub fn from_beats(beats: f64) -> Option<Self> {
+            (beats > 0.).then_some(Self { beats })
+        }
+
+        pub const fn beats(self) -> f64 {
+            self.beats
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, Default)]
     pub struct TimeSignature {
         pub beats_per_measure: u32,
         pub beat_unit: u32,
@@ -100,11 +124,15 @@ mod playlist {
 
     impl Playlist {
         pub fn now(&self) -> Duration {
-            Duration::from_secs_f64((f64::from(self.time.beats) / self.tempo.bpm()).mul_add(60., self.time.plus))
+            Duration::from_secs_f64(self.time.beats / self.tempo.bpm() * 60.)
         }
 
         pub const fn measure(&self) -> u32 {
-            self.time.beats / self.time_signature.beats_per_measure
+            #[allow(clippy::cast_possible_truncation, reason = "truncation is intentional")]
+            #[allow(clippy::cast_sign_loss, reason = "beats cannot be negative")]
+            {
+                self.time.beats as u32 / self.time_signature.beats_per_measure
+            }
         }
     }
 }
@@ -189,19 +217,34 @@ impl Central {
                                     .fill(hex_color!("#101010"))
                                     .show(ui, |ui| {
                                         let (response, painter) = ui.allocate_painter(vec2(f32::INFINITY, playlist.zoom.y), Sense::hover());
-                                        if let Some(path) = response.dnd_hover_payload::<PathBuf>() {
-                                            #[allow(clippy::cast_precision_loss, reason = "rounding errors only occur at unreasonably large values")]
-                                            let beats = ((ui.input(|input| input.pointer.latest_pos().unwrap().x) - ui.clip_rect().left()) / playlist.zoom.x)
-                                                * playlist.time_signature.beats_per_measure as f32;
-                                            playlist.clips.push(Clip {
-                                                start: todo!(
-                                                    "figure out how to store where the start of a clip is, then write some code to
-                                                    compute a multiplier to convert this number of beats to that format"
-                                                ),
-                                                track: y,
-                                                data: ClipData::Audio { path: (*path).clone() },
-                                            });
+                                        if let Some(path) = response.dnd_release_payload::<PathBuf>() {
+                                            if let Some(start) = Time::from_beats(
+                                                f64::from((ui.input(|input| input.pointer.latest_pos().unwrap().x) - response.rect.min.x) / playlist.zoom.x)
+                                                    * f64::from(playlist.time_signature.beats_per_measure),
+                                            ) {
+                                                playlist.clips.push(Clip {
+                                                    start,
+                                                    track: y,
+                                                    data: ClipData::Audio { path: (*path).clone() },
+                                                });
+                                                dbg!(&playlist.clips);
+                                            }
                                         };
+                                        #[allow(clippy::cast_precision_loss, reason = "rounding errors are negligible because this is a visual effect")]
+                                        #[allow(clippy::cast_possible_truncation, reason = "truncation only occurs at unreasonably high numbers")]
+                                        for Clip { start, track, data } in &playlist.clips {
+                                            if track != &y {
+                                                continue;
+                                            }
+                                            let left = (start.beats() as f32 / playlist.time_signature.beats_per_measure as f32).mul_add(playlist.zoom.x, response.rect.min.x);
+                                            let width = dbg!(data.duration()).as_secs_f32() * playlist.tempo.bps() as f32 / playlist.time_signature.beats_per_measure as f32 * playlist.zoom.x;
+                                            painter.rect(
+                                                Rect::from_min_size(pos2(left, painter.clip_rect().top()), vec2(width, painter.clip_rect().height())),
+                                                4.,
+                                                Color32::RED,
+                                                Stroke::new(2., Color32::GREEN),
+                                            );
+                                        }
                                         ui.label(format!("track {y}")).union(response)
                                     })
                                     .response
