@@ -257,10 +257,10 @@ impl Central {
                 #[allow(clippy::cast_precision_loss, reason = "rounding errors are negligible because this is a visual effect")]
                 for index in ((ui.clip_rect().left() - response.rect.min.x) / playlist.zoom.x) as i32..((ui.clip_rect().right() - response.rect.min.x) / playlist.zoom.x).ceil() as i32 {
                     let x = (index as f32).mul_add(playlist.zoom.x, response.rect.min.x);
-                    ui.painter().vline(x, ui.clip_rect().y_range(), Stroke::new(1., hex_color!("#ff0000")));
+                    ui.painter().vline(x, ui.clip_rect().y_range(), Stroke::new(1., hex_color!("5e5a75")));
                     for sub_index in 1..playlist.time_signature.beats_per_measure {
                         let x = (sub_index as f32).mul_add(playlist.zoom.x / playlist.time_signature.beats_per_measure as f32, x);
-                        ui.painter().vline(x, ui.clip_rect().y_range(), Stroke::new(1., hex_color!("#00ff00")));
+                        ui.painter().vline(x, ui.clip_rect().y_range(), Stroke::new(1., hex_color!("2e2b3f")));
                     }
                 }
                 response
