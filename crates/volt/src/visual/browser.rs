@@ -226,12 +226,25 @@ impl Browser {
         egui::Frame::default()
             .inner_margin(Margin::same(8.))
             .show(ui, |ui| {
-                ui.vertical(|ui| self.open_paths.iter().cloned().collect_vec().into_iter().map(|path| self.add_entry(&path, ui)).reduce(Response::bitor))
+                ui.vertical(|ui| self.open_paths.iter().cloned().collect_vec().into_iter().filter_map(|path| self.add_entry(&path, ui)).reduce(Response::bitor))
             })
             .response
     }
 
-    fn add_entry(&mut self, path: &Path, ui: &mut Ui) -> Response {
+    fn add_entry(&mut self, path: &Path, ui: &mut Ui) -> Option<Response> {
+        // TEMPORARY CODE, WILL FIX IN A LATER COMMIT
+        // use egui::Color32;
+        // let rect = ui.max_rect();
+        // ui.painter().rect_filled(rect, 0., Color32::from_rgba_unmultiplied(255, 0, 0, 1));
+        // let next_pos = ui.next_widget_position();
+        // let scroll_offset = ui.clip_rect().bottom();
+        // ui.painter().hline(ui.clip_rect().left()..=ui.clip_rect().right(), scroll_offset, (2.0, Color32::BLUE));
+        // let max_height = ui.available_rect_before_wrap().max.y;
+        // let adjusted_pos = next_pos.y - scroll_offset;
+        // if adjusted_pos > 5000. {
+        //     println!("{:?}", path);
+        //     return Some(egui::Frame::default().show(ui, |_| {}).response)
+        // }
         let kind = EntryKind::from(path);
         let name = path.file_name().map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
         let button = |hovered_entry: &Option<PathBuf>| {
@@ -307,7 +320,7 @@ impl Browser {
         if response.hovered() {
             self.hovered_entry = Some(path.to_path_buf());
         }
-        response
+        Some(response)
     }
 
     fn add_directory_contents(&mut self, path: &Path, ui: &mut Ui) -> Option<Response> {
@@ -330,7 +343,9 @@ impl Browser {
         }
         match self.cached_entries.entry(path.to_path_buf()).or_insert_with(|| {
             trace!("entry cache miss for {:?}", path);
-            self.watcher.watch(path, RecursiveMode::NonRecursive).unwrap();
+            self.watcher.watch(path, RecursiveMode::NonRecursive).unwrap_or_else(|error| {
+                error!("Unexpected error while trying to watch directory: {:?}", error);
+            });
             read_dir(path).and_then(|entries| {
                 entries
                     .map(|entry| {
@@ -350,7 +365,7 @@ impl Browser {
                     .try_collect()
             })
         }) {
-            Ok(directory) => directory.iter().cloned().collect_vec().into_iter().map(|path| self.add_entry(&path, ui)).reduce(Response::bitor),
+            Ok(directory) => directory.iter().cloned().collect_vec().into_iter().filter_map(|path| self.add_entry(&path, ui)).reduce(Response::bitor),
             Err(error) => {
                 error!("Unexpected error while adding directory contents to browser: {:?}", error);
                 None
