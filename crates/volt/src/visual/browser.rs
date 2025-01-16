@@ -149,7 +149,7 @@ pub struct Browser {
     pub theme: ThemeColors,
     pub cached_entries: HashMap<PathBuf, io::Result<Vec<PathBuf>>>,
     pub watcher: RecommendedWatcher,
-    pub watcher_rx: Receiver<notify::Result<Event>>,
+    pub watcher_rx: Receiver<notify::Result<Event>>
 }
 
 impl Browser {
@@ -202,7 +202,7 @@ impl Browser {
         }
     }
 
-    fn button<'a>(theme: &'a ThemeColors, selected: bool, text: &'a str, hovered: bool) -> impl Widget + use<'a> {
+    pub fn button<'a>(theme: &'a ThemeColors, selected: bool, text: &'a str, hovered: bool) -> impl Widget + use<'a> {
         move |ui: &mut Ui| {
             let color = if selected {
                 theme.browser_selected_button_fg
@@ -226,24 +226,25 @@ impl Browser {
         egui::Frame::default()
             .inner_margin(Margin::same(8.))
             .show(ui, |ui| {
-                ui.vertical(|ui| self.open_paths.iter().cloned().collect_vec().into_iter().filter_map(|path| self.add_entry(&path, ui)).reduce(Response::bitor))
+                ui.vertical(|ui| self.open_paths.iter().cloned().collect_vec().into_iter().filter_map(|path| {
+                    self.add_entry(&path, ui)
+                }).reduce(Response::bitor))
             })
             .response
     }
 
     fn add_entry(&mut self, path: &Path, ui: &mut Ui) -> Option<Response> {
-        // TEMPORARY CODE, WILL FIX IN A LATER COMMIT
-        // use egui::Color32;
-        // let rect = ui.max_rect();
-        // ui.painter().rect_filled(rect, 0., Color32::from_rgba_unmultiplied(255, 0, 0, 1));
-        // let next_pos = ui.next_widget_position();
-        // let scroll_offset = ui.clip_rect().bottom();
-        // ui.painter().hline(ui.clip_rect().left()..=ui.clip_rect().right(), scroll_offset, (2.0, Color32::BLUE));
-        // let max_height = ui.available_rect_before_wrap().max.y;
-        // let adjusted_pos = next_pos.y - scroll_offset;
-        // if adjusted_pos > 5000. {
+        let widget_pos_y = ui.next_widget_position().y;
+        let clip_max = ui.clip_rect().max.y;
+        let clip_min = ui.clip_rect().min.y;
+
+        if widget_pos_y >= clip_max {
+            ui.add_space(24.0);
+            return Some(ui.allocate_response(vec2(0.0, 24.0), Sense::hover()));
+        }
+        // fix this later
+        // if widget_pos_y + 24. + 100. <= clip_min {
         //     println!("{:?}", path);
-        //     return Some(egui::Frame::default().show(ui, |_| {}).response)
         // }
         let kind = EntryKind::from(path);
         let name = path.file_name().map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
