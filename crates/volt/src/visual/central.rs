@@ -104,16 +104,12 @@ mod playlist {
             Self { beats_per_hectominute }
         }
 
-        pub fn bpm(&self) -> f64 {
+        pub fn bpm(self) -> f64 {
             f64::from(self.beats_per_hectominute) / 100.
         }
 
-        pub fn bps(&self) -> f64 {
+        pub fn bps(self) -> f64 {
             self.bpm() / 60.
-        }
-
-        pub const fn beats_per_hectominute(&self) -> u32 {
-            self.beats_per_hectominute
         }
     }
 
@@ -132,7 +128,7 @@ mod playlist {
     impl ClipData {
         pub fn duration(&self) -> Duration {
             match self {
-                Self::Audio { path } => {
+                Self::Audio { path: _ } => {
                     // TODO calculate the duration of the audio file and cache it
                     Duration::from_secs_f32(0.5)
                 }

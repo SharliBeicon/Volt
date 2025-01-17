@@ -379,18 +379,24 @@ impl Browser {
             });
             CachedEntry { rx, entries: None }
         });
-        match rx.recv().unwrap() {
-            Ok(recv_entries) => {
+        if let Some(entries) = entries {
+            return Rc::clone(entries).iter().map(|path| self.add_entry(path, ui)).reduce(Response::bitor);
+        }
+        match rx.try_recv() {
+            Ok(Ok(recv_entries)) => {
                 *entries = Some(recv_entries.into());
-                match entries {
-                    Some(entries) => Rc::clone(entries).iter().map(|path| self.add_entry(path, ui)).reduce(Response::bitor),
-                    None => Some(ui.label("Loading entries...")),
-                }
+                Some(ui.label("Loading files..."))
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 error!("Unexpected error while adding directory contents to browser: {:?}", error);
-                None
+                // TODO better error handling (probably blocked by proper notification system)
+                Some(ui.label("Error loading files. Check the standard error stream."))
             }
+            Err(TryRecvError::Disconnected) => {
+                // TODO handle this error better (the thread panicked)
+                panic!("Directory contents were not loaded before the channel disconnected");
+            }
+            Err(TryRecvError::Empty) => Some(ui.label("Loading files...")),
         }
     }
 

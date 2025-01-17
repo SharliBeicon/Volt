@@ -1,5 +1,6 @@
 use blerp::utils::zip;
 use egui::{hex_color, Color32, ColorImage};
+use itertools::Itertools;
 
 // Expose components
 pub mod browser;
@@ -50,22 +51,16 @@ impl Default for ThemeColors {
 }
 
 // Gradient func
-pub fn build_gradient(height: usize, a: Color32, b: Color32) -> egui::ColorImage {
-    let gradient_image = {
-        let mut img = vec![0u8; height * 4];
-        for y in 0..height {
-            let t = y as f32 / (height - 1) as f32;
-            let color = a.to_array();
-            let color2 = b.to_array();
-            let pixel = [
-                (color[0] as f32 * (1.0 - t) + color2[0] as f32 * t) as u8,
-                (color[1] as f32 * (1.0 - t) + color2[1] as f32 * t) as u8,
-                (color[2] as f32 * (1.0 - t) + color2[2] as f32 * t) as u8,
-                255,
-            ];
-            img[y * 4..(y + 1) * 4].copy_from_slice(&pixel);
-        }
-        egui::ColorImage::from_rgba_unmultiplied([1, height], &img)
-    };
-    gradient_image
+pub fn build_gradient(height: usize, a: Color32, b: Color32) -> ColorImage {
+    ColorImage::from_rgba_unmultiplied(
+        [1, height],
+        &(0..height)
+            .flat_map(|y| {
+                #[allow(clippy::cast_precision_loss, reason = "rounding errors are negligible because this is a visual effect")]
+                let factor = y as f32 / (height - 1) as f32;
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "the `f32`s are within the `u8` range")]
+                zip(a.to_array(), b.to_array()).map(|(a, b)| f32::from(a).mul_add(1.0 - factor, f32::from(b) * factor) as u8)
+            })
+            .collect_vec(),
+    )
 }
