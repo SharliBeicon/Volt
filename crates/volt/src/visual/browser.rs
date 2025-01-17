@@ -149,7 +149,7 @@ pub struct Browser {
     pub theme: ThemeColors,
     pub cached_entries: HashMap<PathBuf, io::Result<Vec<PathBuf>>>,
     pub watcher: RecommendedWatcher,
-    pub watcher_rx: Receiver<notify::Result<Event>>
+    pub watcher_rx: Receiver<notify::Result<Event>>,
 }
 
 impl Browser {
@@ -226,9 +226,15 @@ impl Browser {
         egui::Frame::default()
             .inner_margin(Margin::same(8.))
             .show(ui, |ui| {
-                ui.vertical(|ui| self.open_paths.iter().cloned().collect_vec().into_iter().filter_map(|path| {
-                    self.add_entry(&path, ui)
-                }).reduce(Response::bitor))
+                ui.vertical(|ui| {
+                    self.open_paths
+                        .iter()
+                        .cloned()
+                        .collect_vec()
+                        .into_iter()
+                        .filter_map(|path| self.add_entry(&path, ui))
+                        .reduce(Response::bitor)
+                })
             })
             .response
     }
@@ -344,9 +350,9 @@ impl Browser {
         }
         match self.cached_entries.entry(path.to_path_buf()).or_insert_with(|| {
             trace!("entry cache miss for {:?}", path);
-            self.watcher.watch(path, RecursiveMode::NonRecursive).unwrap_or_else(|error| {
+            if let Err(error) = self.watcher.watch(path, RecursiveMode::NonRecursive) {
                 error!("Unexpected error while trying to watch directory: {:?}", error);
-            });
+            }
             read_dir(path).and_then(|entries| {
                 entries
                     .map(|entry| {
