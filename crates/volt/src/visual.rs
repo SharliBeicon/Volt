@@ -1,4 +1,5 @@
-use egui::{hex_color, Color32};
+use blerp::utils::zip;
+use egui::{hex_color, Color32, ColorImage};
 
 // Expose components
 pub mod browser;
@@ -9,8 +10,8 @@ pub mod switch;
 // Theming
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ThemeColors {
-    pub navbar_background: Color32,
-    pub navbar_background_2: Color32,
+    pub navbar_background_gradient_top: Color32,
+    pub navbar_background_gradient_bottom: Color32,
     pub navbar_outline: Color32,
     pub central_background: Color32,
     pub browser: Color32,
@@ -29,8 +30,8 @@ pub struct ThemeColors {
 impl Default for ThemeColors {
     fn default() -> Self {
         Self {
-            navbar_background: hex_color!("2c2b47"),
-            navbar_background_2: hex_color!("221f31"),
+            navbar_background_gradient_top: hex_color!("2c2b47"),
+            navbar_background_gradient_bottom: hex_color!("221f31"),
             navbar_outline: hex_color!("453f67"),
             central_background: hex_color!("1c1b2b"),
             browser: hex_color!("1d1b2b"),

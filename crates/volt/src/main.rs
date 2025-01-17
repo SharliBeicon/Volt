@@ -2,7 +2,7 @@
 use std::io::{BufReader, Cursor};
 
 use eframe::{egui, run_native, App, CreationContext, NativeOptions};
-use egui::{CentralPanel, Context, FontData, FontDefinitions, FontFamily, FontId, IconData, SidePanel, TextStyle, TopBottomPanel, ViewportBuilder};
+use egui::{CentralPanel, Context, FontData, FontDefinitions, FontFamily, FontId, IconData, Rect, SidePanel, TextStyle, TextureOptions, TopBottomPanel, ViewportBuilder};
 use egui_extras::install_image_loaders;
 use human_panic::setup_panic;
 use image::{ImageFormat, ImageReader};
@@ -89,8 +89,8 @@ impl App for VoltApp {
     fn update(&mut self, ctx: &Context, _: &mut eframe::Frame) {
         ctx.request_repaint();
 
-        let navbar_texture_image = visual::build_gradient(40, self.themes.navbar_background, self.themes.navbar_background_2);
-        let navbar_texture = ctx.load_texture("navbar_texture", navbar_texture_image, Default::default());
+        let navbar_texture_image = visual::build_gradient(40, self.themes.navbar_background_gradient_top, self.themes.navbar_background_gradient_bottom);
+        let navbar_texture = ctx.load_texture("navbar_texture", navbar_texture_image, TextureOptions::default());
 
         TopBottomPanel::top("navbar").frame(egui::Frame::default()).show(ctx, |ui| {
             ui.painter().image(

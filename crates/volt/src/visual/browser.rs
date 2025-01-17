@@ -1,3 +1,5 @@
+#![warn(clippy::clone_on_ref_ptr)]
+
 use blerp::utils::zip;
 use itertools::Itertools;
 use notify::{recommended_watcher, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -5,12 +7,14 @@ use open::that_detached;
 use rodio::{Decoder, OutputStream, Sink, Source};
 use std::{
     borrow::Cow,
+    cell::RefCell,
     collections::HashMap,
     fs::{read_dir, DirEntry, File},
     io::{self, BufReader},
     iter::Iterator,
     ops::BitOr,
     path::{Path, PathBuf},
+    rc::Rc,
     str::FromStr,
     string::ToString,
     sync::mpsc::{channel, Receiver, Sender, TryRecvError},
@@ -141,15 +145,20 @@ impl PreviewData {
 }
 
 pub struct Browser {
-    pub selected_category: Category,
-    pub other_category_hovered: bool,
-    pub open_paths: Vec<PathBuf>,
-    pub preview: Preview,
-    pub hovered_entry: Option<PathBuf>,
-    pub theme: ThemeColors,
-    pub cached_entries: HashMap<PathBuf, io::Result<Vec<PathBuf>>>,
-    pub watcher: RecommendedWatcher,
-    pub watcher_rx: Receiver<notify::Result<Event>>,
+    selected_category: Category,
+    other_category_hovered: bool,
+    open_paths: Rc<RefCell<Vec<PathBuf>>>,
+    preview: Preview,
+    hovered_entry: Option<PathBuf>,
+    theme: ThemeColors,
+    cached_entries: HashMap<PathBuf, CachedEntry>,
+    watcher: RecommendedWatcher,
+    watcher_rx: Receiver<notify::Result<Event>>,
+}
+
+struct CachedEntry {
+    rx: Receiver<io::Result<Vec<PathBuf>>>,
+    entries: Option<Rc<[PathBuf]>>,
 }
 
 impl Browser {
@@ -159,7 +168,7 @@ impl Browser {
         Self {
             selected_category: Category::Files,
             other_category_hovered: false,
-            open_paths: vec![PathBuf::from_str("/").unwrap()],
+            open_paths: Rc::new(RefCell::new(vec![PathBuf::from_str("/").unwrap()])),
             preview: {
                 let (path_tx, path_rx) = channel::<PathBuf>();
                 let (file_data_tx, file_data_rx) = channel();
@@ -226,27 +235,19 @@ impl Browser {
         egui::Frame::default()
             .inner_margin(Margin::same(8.))
             .show(ui, |ui| {
-                ui.vertical(|ui| {
-                    self.open_paths
-                        .iter()
-                        .cloned()
-                        .collect_vec()
-                        .into_iter()
-                        .filter_map(|path| self.add_entry(&path, ui))
-                        .reduce(Response::bitor)
-                })
+                ui.vertical(|ui| Rc::clone(&self.open_paths).borrow().iter().map(|path| self.add_entry(path, ui)).reduce(Response::bitor))
             })
             .response
     }
 
-    fn add_entry(&mut self, path: &Path, ui: &mut Ui) -> Option<Response> {
+    fn add_entry(&mut self, path: &Path, ui: &mut Ui) -> Response {
         let widget_pos_y = ui.next_widget_position().y;
         let clip_max = ui.clip_rect().max.y;
         let clip_min = ui.clip_rect().min.y;
 
         if widget_pos_y >= clip_max {
             ui.add_space(24.0);
-            return Some(ui.allocate_response(vec2(0.0, 24.0), Sense::hover()));
+            return ui.allocate_response(vec2(0.0, 24.0), Sense::hover());
         }
         // fix this later
         // if widget_pos_y + 24. + 100. <= clip_min {
@@ -327,7 +328,7 @@ impl Browser {
         if response.hovered() {
             self.hovered_entry = Some(path.to_path_buf());
         }
-        Some(response)
+        response
     }
 
     fn add_directory_contents(&mut self, path: &Path, ui: &mut Ui) -> Option<Response> {
@@ -348,31 +349,44 @@ impl Browser {
             }
             Err(TryRecvError::Empty) => {}
         }
-        match self.cached_entries.entry(path.to_path_buf()).or_insert_with(|| {
+        let CachedEntry { rx, entries } = self.cached_entries.entry(path.to_path_buf()).or_insert_with(|| {
             trace!("entry cache miss for {:?}", path);
             if let Err(error) = self.watcher.watch(path, RecursiveMode::NonRecursive) {
                 error!("Unexpected error while trying to watch directory: {:?}", error);
             }
-            read_dir(path).and_then(|entries| {
-                entries
-                    .map(|entry| {
-                        {
-                            match entry {
-                                Ok(ref x) => Ok(x),
-                                Err(x) => Err(x),
+            let (tx, rx) = channel();
+            let read_dir = read_dir(path);
+            spawn(move || {
+                tx.send(read_dir.and_then(|entries| {
+                    entries
+                        .map(|entry| {
+                            {
+                                match entry {
+                                    Ok(ref x) => Ok(x),
+                                    Err(x) => Err(x),
+                                }
                             }
-                        }
-                        .map(DirEntry::path)
-                    })
-                    .sorted_unstable_by(|a, b| {
-                        let a = a.as_ref().ok();
-                        let b = b.as_ref().ok();
-                        Ord::cmp(&(a.map(EntryKind::from), a), &(b.map(EntryKind::from), b))
-                    })
-                    .try_collect()
-            })
-        }) {
-            Ok(directory) => directory.iter().cloned().collect_vec().into_iter().filter_map(|path| self.add_entry(&path, ui)).reduce(Response::bitor),
+                            .map(DirEntry::path)
+                        })
+                        .sorted_unstable_by(|a, b| {
+                            let a = a.as_ref().ok();
+                            let b = b.as_ref().ok();
+                            Ord::cmp(&(a.map(EntryKind::from), a), &(b.map(EntryKind::from), b))
+                        })
+                        .try_collect()
+                }))
+                .unwrap();
+            });
+            CachedEntry { rx, entries: None }
+        });
+        match rx.recv().unwrap() {
+            Ok(recv_entries) => {
+                *entries = Some(recv_entries.into());
+                match entries {
+                    Some(entries) => Rc::clone(entries).iter().map(|path| self.add_entry(path, ui)).reduce(Response::bitor),
+                    None => Some(ui.label("Loading entries...")),
+                }
+            }
             Err(error) => {
                 error!("Unexpected error while adding directory contents to browser: {:?}", error);
                 None
@@ -380,12 +394,12 @@ impl Browser {
         }
     }
 
-    fn handle_file_or_folder_drop(&mut self, ctx: &Context) {
+    fn handle_file_or_folder_drop(&self, ctx: &Context) {
         let files: Vec<_> = ctx
             .input(|input| input.raw.dropped_files.iter().map(move |DroppedFile { path, .. }| path.clone().ok_or(())).try_collect())
             .unwrap_or_default();
         for path in files {
-            self.open_paths.push(path);
+            self.open_paths.borrow_mut().push(path);
         }
     }
 
