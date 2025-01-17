@@ -385,7 +385,8 @@ impl Browser {
         match rx.try_recv() {
             Ok(Ok(recv_entries)) => {
                 *entries = Some(recv_entries.into());
-                Some(ui.label("Loading files..."))
+                let rotated = Image::new(include_image!("../images/icons/loading.png")).rotate(ui.input(|i| i.time * 6.0) as f32 % 360., vec2(0.5, 0.5));
+                Some(ui.add_sized(vec2(16., 16.), rotated))
             }
             Ok(Err(error)) => {
                 error!("Unexpected error while adding directory contents to browser: {:?}", error);
@@ -396,7 +397,10 @@ impl Browser {
                 // TODO handle this error better (the thread panicked)
                 panic!("Directory contents were not loaded before the channel disconnected");
             }
-            Err(TryRecvError::Empty) => Some(ui.label("Loading files...")),
+            Err(TryRecvError::Empty) => {
+                let rotated = Image::new(include_image!("../images/icons/loading.png")).rotate(ui.input(|i| i.time * 6.0) as f32 % 360., vec2(0.5, 0.5));
+                Some(ui.add_sized(vec2(16., 16.), rotated))
+            },
         }
     }
 
