@@ -1,23 +1,25 @@
 use std::{
-    borrow::Cow,
     fmt::Debug,
-    io::{self, Write},
+    io::{self, Read, Write},
     mem::size_of,
     num::NonZeroU16,
 };
 
 use cpal::FromSample;
 use itertools::Itertools;
+use nom::error::{ErrorKind, FromExternalError, ParseError};
+use nom_bufreader::{bufreader::BufReader, Parse};
 use num::traits::ToBytes;
+use read::{wave_file, Input};
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
-pub struct WaveFile<'a> {
+pub struct WaveFile {
     pub format: Format,
     pub channels: NonZeroU16,
     pub sample_rate: u32,
     pub bytes_per_sample: u16,
-    pub data: Cow<'a, [u8]>,
+    pub data: Vec<u8>,
 }
 
 #[repr(u16)]
@@ -27,8 +29,57 @@ pub enum Format {
     FloatingPoint = 3,
 }
 
+#[derive(Debug)]
+pub struct ReadError {
+    pub kind: ReadErrorKind,
+    pub position: usize,
+}
+
+#[derive(Debug)]
+pub enum ReadErrorKind {
+    /// `nAvgBytesPerSec` is not equal to `nSamplesPerSec * nBlockAlign`.
+    DataRateMismatch,
+    /// `nChannels` is not equal to `nBlockAlign / wBitsPerSample`.
+    ChannelCountMismatch,
+    /// `nChannels` was zero.
+    NoChannels,
+    /// The format is floating point (`wFormatTag == 3`), but the `cbSize` field was not given.
+    MissingFormatChunkExtensionSize,
+    /// The format was not PCM (`wFormatTag == 1`) or IEEE floating point (`wFormatTag == 3`).
+    FormatNotSupported,
+    /// The format is floating point (`wFormatTag == 3`), but the `fact` chunk was missing.
+    MissingFactChunk,
+    /// The `fact` chunk's `dwSampleLength` field was not equal to the number of samples in the data chunk.
+    FactChunkLengthMismatch,
+    /// The size of the data chunk was not a multiple of the block size.
+    DataSizeNotMultipleOfBlockSize,
+    /// The size of the data chunk did not match information in the format and `fact` chunks.
+    InvalidDataSize,
+    /// Other parse error.
+    Nom(ErrorKind),
+}
+
+impl ParseError<Input<'_>> for ReadError {
+    fn from_error_kind(input: Input, kind: ErrorKind) -> Self {
+        Self {
+            kind: ReadErrorKind::Nom(kind),
+            position: input.location_offset(),
+        }
+    }
+
+    fn append(_: Input, _: ErrorKind, other: Self) -> Self {
+        other
+    }
+}
+
+impl FromExternalError<Input<'_>, Self> for ReadError {
+    fn from_external_error(_: Input, _: ErrorKind, error: Self) -> Self {
+        error
+    }
+}
+
 #[derive(Error, Debug)]
-pub enum WaveFileWriteError {
+pub enum WriteError {
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
     #[error("data too long")]
@@ -78,7 +129,7 @@ impl WaveFileSample for f64 {
     const SAMPLE_FORMAT: Format = Format::FloatingPoint;
 }
 
-impl<'a> WaveFile<'a> {
+impl WaveFile {
     /// Create a new [`WaveFile`] from an iterable of samples and a sample rate, or [`None`] if the number of channels does not fit in a [`NonZeroU16`], because it was zero or more than [`u16::MAX`].
     /// # Panics
     /// Panics if the size of the sample type is too large to fit in a [`u16`], because there were more than [`u16::MAX`] channels.
@@ -104,7 +155,6 @@ impl<'a> WaveFile<'a> {
             };
             data.extend(samples.into_iter().flatten());
         }
-        let data = data.into();
 
         Ok(Self {
             format,
@@ -116,13 +166,13 @@ impl<'a> WaveFile<'a> {
     }
 
     #[must_use]
-    pub fn from_raw_data(data: &'a [u8], format: Format, channels: NonZeroU16, sample_rate: u32, bytes_per_sample: u16) -> Self {
+    pub const fn from_raw_data(data: Vec<u8>, format: Format, channels: NonZeroU16, sample_rate: u32, bytes_per_sample: u16) -> Self {
         Self {
             format,
             channels,
             sample_rate,
             bytes_per_sample,
-            data: data.into(),
+            data,
         }
     }
 
@@ -130,13 +180,13 @@ impl<'a> WaveFile<'a> {
     /// # Errors
     /// Returns an [`WaveFileWriteError::Io`] if writing to the writer fails (from calls to [`Write::write_all`]), or [`WaveFileWriteError::DataTooLong`] if the data was longer than [`u32::MAX`]
     /// bytes.
-    pub fn write(&self, writer: &mut impl Write) -> Result<(), WaveFileWriteError> {
+    pub fn write(&self, writer: &mut impl Write) -> Result<(), WriteError> {
         const RIFF_DATA_LEN_PCM: usize = 4 + 4 + 4 + 2 + 2 + 4 + 4 + 2 + 2 + 4 + 4;
         const RIFF_DATA_LEN_FLOAT: usize = RIFF_DATA_LEN_PCM + 2 + 4 + 4 + 4;
         writer.write_all(b"RIFF")?;
         writer.write_all(
             &u32::try_from(if self.format == Format::FloatingPoint { RIFF_DATA_LEN_FLOAT } else { RIFF_DATA_LEN_PCM } + self.data.len())
-                .map_err(|_| WaveFileWriteError::DataTooLong)?
+                .map_err(|_| WriteError::DataTooLong)?
                 .to_le_bytes(),
         )?;
         writer.write_all(b"WAVEfmt ")?;
@@ -152,15 +202,159 @@ impl<'a> WaveFile<'a> {
 
             writer.write_all(b"fact")?;
             writer.write_all(&4_u32.to_le_bytes())?;
-            writer.write_all(
-                &u32::try_from(self.data.len() / self.bytes_per_sample as usize)
-                    .map_err(|_| WaveFileWriteError::DataTooLong)?
-                    .to_le_bytes(),
-            )?;
+            writer.write_all(&u32::try_from(self.data.len() / self.bytes_per_sample as usize).map_err(|_| WriteError::DataTooLong)?.to_le_bytes())?;
         }
         writer.write_all(b"data")?;
-        writer.write_all(&u32::try_from(self.data.len()).map_err(|_| WaveFileWriteError::DataTooLong)?.to_le_bytes())?;
+        writer.write_all(&u32::try_from(self.data.len()).map_err(|_| WriteError::DataTooLong)?.to_le_bytes())?;
         writer.write_all(&self.data)?;
         Ok(())
+    }
+
+    /// Read a [`WaveFile`] from a reader.
+    /// # Errors
+    /// Returns a [`ReadError`] if the file is not a valid wave file.
+    ///
+    /// Returns an [`io::Error`] if reading from the reader fails.
+    ///
+    /// See [`nom_bufreader::Error`] for details.
+    pub fn read(reader: &mut impl Read) -> Result<Self, nom_bufreader::Error<ReadError>> {
+        BufReader::new(reader).parse(wave_file)
+    }
+}
+
+mod read {
+    use std::num::NonZeroU16;
+
+    use nom::{
+        branch::{alt, permutation},
+        bytes::streaming::{tag, take},
+        combinator::{all_consuming, consumed, map, map_res, opt, verify},
+        multi::{length_data, length_value},
+        number::streaming::{le_u16, le_u32},
+        sequence::{preceded, terminated, tuple},
+        IResult,
+    };
+    use nom_locate::LocatedSpan;
+
+    use super::{Format, ReadError, ReadErrorKind, WaveFile};
+
+    pub type Input<'a> = LocatedSpan<&'a [u8]>;
+    type FormatChunk = (Format, NonZeroU16, u32, u16, u16);
+
+    fn format_chunk(input: Input) -> IResult<Input, FormatChunk, ReadError> {
+        map_res::<Input, _, _, _, _, _, _>(
+            preceded(
+                tag(b"fmt "),
+                length_value(
+                    le_u32,
+                    all_consuming(tuple((
+                        consumed(le_u16),
+                        consumed(le_u16),
+                        le_u32,
+                        consumed(le_u32),
+                        le_u16,
+                        le_u16,
+                        map(opt(tag(&0_u16.to_le_bytes())), |extension| extension.is_some()),
+                    ))),
+                ),
+            ),
+            |((format_span, format), (channels_span, channels), sample_rate, (bytes_per_second_span, bytes_per_second), block_size, bits_per_sample, has_extension)| {
+                // TODO use consumed to make proper positions
+                if sample_rate * u32::from(block_size) != bytes_per_second {
+                    return Err(ReadError {
+                        kind: ReadErrorKind::DataRateMismatch,
+                        position: bytes_per_second_span.location_offset(),
+                    });
+                }
+                if channels != block_size / (bits_per_sample / 8) {
+                    return Err(ReadError {
+                        kind: ReadErrorKind::ChannelCountMismatch,
+                        position: channels_span.location_offset(),
+                    });
+                }
+                let Some(channels) = NonZeroU16::new(channels) else {
+                    return Err(ReadError {
+                        kind: ReadErrorKind::NoChannels,
+                        position: channels_span.location_offset(),
+                    });
+                };
+                let format = match format {
+                    1 => Format::PulseCodeModulation,
+                    3 => Format::FloatingPoint,
+                    _ => {
+                        return Err(ReadError {
+                            kind: ReadErrorKind::FormatNotSupported,
+                            position: format_span.location_offset(),
+                        })
+                    }
+                };
+                if format == Format::FloatingPoint && !has_extension {
+                    return Err(ReadError {
+                        kind: ReadErrorKind::MissingFormatChunkExtensionSize,
+                        position: format_span.location_offset(),
+                    });
+                }
+
+                Ok((format, channels, sample_rate, block_size, bits_per_sample))
+            },
+        )(input)
+    }
+
+    fn data_chunk(input: Input) -> IResult<Input, Input, ReadError> {
+        preceded(
+            tag(b"data"),
+            alt((verify(length_data(le_u32), |data: &Input| data.len() % 2 == 0), terminated(length_data(le_u32), take(1_usize)))),
+        )(input)
+    }
+
+    fn fact_chunk(input: Input) -> IResult<Input, (Input, u32), ReadError> {
+        preceded(tag(b"fact\x04\0\0\0"), consumed(le_u32))(input)
+    }
+
+    pub fn wave_file(input: &[u8]) -> IResult<&[u8], WaveFile, ReadError> {
+        let (remaining, ((format, channels, sample_rate, _block_size, bits_per_sample), data, _samples_length)) = all_consuming(map_res(
+            preceded(tag(b"RIFF"), length_value(le_u32, preceded(tag(b"WAVE"), permutation((format_chunk, data_chunk, opt(fact_chunk)))))),
+            |chunks @ ((format, channels, _sample_rate, block_size, bits_per_sample), data, samples_length)| {
+                if let Some((span, samples_length)) = samples_length {
+                    if data.len() / (usize::from(bits_per_sample) / 8) != samples_length as usize {
+                        return Err(ReadError {
+                            kind: ReadErrorKind::FactChunkLengthMismatch,
+                            position: span.location_offset(),
+                        });
+                    }
+                    if data.len() != block_size as usize * samples_length as usize / usize::from(channels.get()) {
+                        return Err(ReadError {
+                            kind: ReadErrorKind::InvalidDataSize,
+                            position: data.location_offset(),
+                        });
+                    }
+                } else {
+                    if format == Format::FloatingPoint {
+                        return Err(ReadError {
+                            kind: ReadErrorKind::MissingFactChunk,
+                            position: input.len(),
+                        });
+                    }
+                    if data.len() % block_size as usize != 0 {
+                        return Err(ReadError {
+                            kind: ReadErrorKind::DataSizeNotMultipleOfBlockSize,
+                            position: data.location_offset(),
+                        });
+                    }
+                }
+
+                Ok(chunks)
+            },
+        ))(LocatedSpan::new(input))?;
+        Ok((
+            remaining.into_fragment(),
+            WaveFile {
+                format,
+                channels,
+                sample_rate,
+                bytes_per_sample: bits_per_sample / 8,
+                data: data.into_fragment().to_vec(),
+            },
+        ))
     }
 }
