@@ -156,7 +156,7 @@ pub struct Browser {
 
 struct CachedEntry {
     rx: Receiver<io::Result<Vec<PathBuf>>>,
-    entries: Option<Rc<[PathBuf]>>,
+    entries: Option<io::Result<Rc<[PathBuf]>>>,
 }
 
 impl Browser {
@@ -377,29 +377,32 @@ impl Browser {
             });
             CachedEntry { rx, entries: None }
         });
-        if let Some(entries) = entries {
-            return Rc::clone(entries).iter().map(|path| self.add_entry(path, ui)).reduce(Response::bitor);
-        }
-        match rx.try_recv() {
-            Ok(Ok(recv_entries)) => {
-                *entries = Some(recv_entries.into());
-                #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
-                let rotated = Image::new(include_image!("../images/icons/loading.png")).rotate(ui.input(|i| i.time * 6.0) as f32, vec2(0.5, 0.5));
-                Some(ui.add_sized(vec2(16., 16.), rotated))
-            }
-            Ok(Err(error)) => {
-                error!("Unexpected error while adding directory contents to browser: {:?}", error);
-                // TODO: better error handling (probably blocked by proper notification system)
-                Some(ui.label("Error loading files. Check the standard error stream."))
-            }
-            Err(TryRecvError::Disconnected) => {
-                // TODO: show the actual error instead of this generic message.
-                Some(ui.label("Failed to load contents!"))
-            }
-            Err(TryRecvError::Empty) => {
-                #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
-                let rotated = Image::new(include_image!("../images/icons/loading.png")).rotate(ui.input(|i| i.time * 6.0) as f32, vec2(0.5, 0.5));
-                Some(ui.add_sized(vec2(16., 16.), rotated))
+        match entries {
+            Some(result) => match result {
+                Ok(entries) => Rc::clone(entries).iter().map(|path| self.add_entry(path, ui)).reduce(Response::bitor),
+                Err(error) => Some(ui.label(format!("Failed to load contents: {error:?}"))),
+            },
+            None => {
+                match rx.try_recv() {
+                    Ok(Ok(recv_entries)) => {
+                        *entries = Some(Ok(recv_entries.into()));
+                        #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
+                        let rotated = Image::new(include_image!("../images/icons/loading.png")).rotate(ui.input(|i| i.time * 6.0) as f32, vec2(0.5, 0.5));
+                        Some(ui.add_sized(vec2(16., 16.), rotated))
+                    }
+                    Ok(Err(error)) => {
+                        *entries = Some(Err(error));
+                        None
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        None
+                    }
+                    Err(TryRecvError::Empty) => {
+                        #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
+                        let rotated = Image::new(include_image!("../images/icons/loading.png")).rotate(ui.input(|i| i.time * 6.0) as f32, vec2(0.5, 0.5));
+                        Some(ui.add_sized(vec2(16., 16.), rotated))
+                    }
+                }
             }
         }
     }
