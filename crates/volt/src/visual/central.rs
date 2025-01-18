@@ -1,12 +1,14 @@
-use std::collections::HashMap;
 use std::ops::BitOr;
 use std::path::PathBuf;
+use std::{collections::HashMap, num::NonZeroU64};
 
+use blerp::processing::effects::clip::ClipEffect;
+use blerp::processing::effects::scale::ScaleEffect;
 use eframe::egui;
 use egui::{
     hex_color, pos2, scroll_area::ScrollBarVisibility, vec2, Align, Align2, Color32, CursorIcon, Frame, Id, InputState, Layout, Rect, Response, ScrollArea, Sense, Stroke, Ui, UiBuilder, Vec2, Widget,
 };
-use graph::{Graph, NodeData};
+use graph::{Graph, Node, NodeData, NodeId};
 use itertools::Itertools;
 use playlist::{Clip, ClipData, Playlist, Time};
 
@@ -42,9 +44,11 @@ mod graph {
 }
 
 mod playlist {
-    use std::{path::PathBuf, time::Duration};
-
+    use cpal::Sample;
     use egui::{vec2, Vec2};
+    use itertools::Itertools;
+    use rodio::{Decoder, Source};
+    use std::{fs::File, io::BufReader, path::PathBuf, time::Duration};
 
     #[derive(Debug)]
     pub struct Playlist {
@@ -122,17 +126,16 @@ mod playlist {
 
     #[derive(Debug, Clone)]
     pub enum ClipData {
-        Audio { path: PathBuf },
+        Audio { path: PathBuf, samples: Vec<f64>, length: Duration },
+        Midi { length: Time },
     }
 
     impl ClipData {
-        pub fn duration(&self) -> Duration {
-            match self {
-                Self::Audio { path: _ } => {
-                    // TODO calculate the duration of the audio file and cache it
-                    Duration::from_secs_f32(0.5)
-                }
-            }
+        pub fn from_path(path: PathBuf) -> Self {
+            let decoder = Decoder::new(BufReader::new(File::open(&path).unwrap())).unwrap();
+            let length = decoder.total_duration().unwrap();
+            let samples = decoder.map(f64::from_sample).collect_vec();
+            Self::Audio { path, samples, length }
         }
     }
 
@@ -175,22 +178,35 @@ mod playlist {
                 self.time.beats as u32 / self.time_signature.beats_per_measure
             }
         }
+
+        pub fn beats_to_duration(&self, beats: f64) -> Duration {
+            Duration::from_secs_f64(beats / self.tempo.bps())
+        }
+
+        pub fn duration_of_clip(&self, clip: &ClipData) -> Duration {
+            match clip {
+                ClipData::Audio { length, .. } => *length,
+                ClipData::Midi { length } => self.beats_to_duration(length.beats()),
+            }
+        }
     }
 }
 
 enum Mode {
-    Playlist(Playlist),
-    Graph(Graph),
+    Playlist,
+    Graph,
 }
 
 impl Default for Mode {
     fn default() -> Self {
-        Self::Playlist(Playlist::default())
+        Self::Playlist
     }
 }
 
 pub struct Central {
     mode: Mode,
+    playlist: Playlist,
+    graph: Graph,
 }
 
 impl Default for Central {
@@ -202,44 +218,46 @@ impl Default for Central {
 impl Central {
     pub fn new() -> Self {
         Self {
-            mode: Mode::Playlist(Playlist::default()),
-            // mode: Mode::Graph(Graph {
-            //     drag_start_offset: Some(vec2(0., 0.)),
-            //     pan_offset: vec2(0., 0.),
-            //     nodes: [
-            //         (
-            //             NodeId::Middle(NonZeroU64::new(1).unwrap()),
-            //             Node {
-            //                 data: NodeData::Middle {
-            //                     effect: Box::new(Clip::new_symmetrical(0.5)),
-            //                     output: Some(NodeId::Middle(NonZeroU64::new(2).unwrap())),
-            //                 },
-            //                 position: vec2(-200., -20.),
-            //                 drag_start_offset: None,
-            //             },
-            //         ),
-            //         (
-            //             NodeId::Middle(NonZeroU64::new(2).unwrap()),
-            //             Node {
-            //                 data: NodeData::Middle {
-            //                     effect: Box::new(Scale::new(2.)),
-            //                     output: Some(NodeId::Output),
-            //                 },
-            //                 position: vec2(-30., 80.),
-            //                 drag_start_offset: None,
-            //             },
-            //         ),
-            //         (
-            //             NodeId::Output,
-            //             Node {
-            //                 data: NodeData::Output,
-            //                 position: vec2(150., 10.),
-            //                 drag_start_offset: None,
-            //             },
-            //         ),
-            //     ]
-            //     .into(),
-            // })
+            mode: Mode::Playlist,
+            playlist: Playlist::default(),
+
+            graph: Graph {
+                drag_start_offset: Some(vec2(0., 0.)),
+                pan_offset: vec2(0., 0.),
+                nodes: [
+                    (
+                        NodeId::Middle(NonZeroU64::new(1).unwrap()),
+                        Node {
+                            data: NodeData::Middle {
+                                effect: Box::new(ClipEffect::new_symmetrical(0.5)),
+                                output: Some(NodeId::Middle(NonZeroU64::new(2).unwrap())),
+                            },
+                            position: vec2(-200., -20.),
+                            drag_start_offset: None,
+                        },
+                    ),
+                    (
+                        NodeId::Middle(NonZeroU64::new(2).unwrap()),
+                        Node {
+                            data: NodeData::Middle {
+                                effect: Box::new(ScaleEffect::new(2.)),
+                                output: Some(NodeId::Output),
+                            },
+                            position: vec2(-30., 80.),
+                            drag_start_offset: None,
+                        },
+                    ),
+                    (
+                        NodeId::Output,
+                        Node {
+                            data: NodeData::Output,
+                            position: vec2(150., 10.),
+                            drag_start_offset: None,
+                        },
+                    ),
+                ]
+                .into(),
+            },
         }
     }
 
@@ -270,7 +288,7 @@ impl Central {
                                                 playlist.clips.push(Clip {
                                                     start,
                                                     track: y,
-                                                    data: ClipData::Audio { path: (*path).clone() },
+                                                    data: ClipData::from_path((*path).clone()),
                                                 });
                                                 dbg!(&playlist.clips);
                                             }
@@ -282,7 +300,8 @@ impl Central {
                                                 continue;
                                             }
                                             let left = (start.beats() as f32 / playlist.time_signature.beats_per_measure as f32).mul_add(playlist.zoom.x, response.rect.min.x);
-                                            let width = data.duration().as_secs_f32() * playlist.tempo.bps() as f32 / playlist.time_signature.beats_per_measure as f32 * playlist.zoom.x;
+                                            let width =
+                                                playlist.duration_of_clip(data).as_secs_f32() * playlist.tempo.bps() as f32 / playlist.time_signature.beats_per_measure as f32 * playlist.zoom.x;
                                             let rect = Rect::from_min_size(pos2(left, painter.clip_rect().top()), vec2(width, painter.clip_rect().height()));
                                             painter.rect(rect, 4., Color32::RED, Stroke::new(2., Color32::GREEN));
                                             painter.debug_text(
@@ -290,7 +309,8 @@ impl Central {
                                                 Align2::LEFT_TOP,
                                                 Color32::BLUE,
                                                 match data {
-                                                    ClipData::Audio { path } => path.file_name().unwrap().to_string_lossy(),
+                                                    ClipData::Audio { path, .. } => path.file_name().unwrap().to_string_lossy(),
+                                                    ClipData::Midi { .. } => "<midi data>".into(),
                                                 },
                                             );
                                         }
@@ -407,8 +427,8 @@ impl Widget for &mut Central {
     fn ui(self, ui: &mut Ui) -> Response {
         Frame::default()
             .show(ui, |ui| match &mut self.mode {
-                Mode::Playlist(playlist) => Central::add_playlist(ui, playlist),
-                Mode::Graph(graph) => Central::add_graph(ui, graph),
+                Mode::Playlist => Central::add_playlist(ui, &mut self.playlist),
+                Mode::Graph => Central::add_graph(ui, &mut self.graph),
             })
             .response
     }

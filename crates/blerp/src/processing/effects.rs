@@ -28,25 +28,25 @@ pub mod clip {
     use itertools::Itertools;
 
     /// An effect that clips a sample to between `lower` and `upper`.
-    pub struct Clip {
+    pub struct ClipEffect {
         lower: f64,
         upper: f64,
     }
 
-    impl Effect for Clip {
+    impl Effect for ClipEffect {
         fn apply<'a>(&self, mut input: Stuff<'a>) -> Result<Stuff<'a>, EffectError> {
             input.samples = input.samples.iter().map(|sample| sample.clamp(self.lower, self.upper)).collect_vec().into();
             Ok(input)
         }
     }
 
-    impl Display for Clip {
+    impl Display for ClipEffect {
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
             write!(f, "Clip")
         }
     }
 
-    impl Clip {
+    impl ClipEffect {
         /// Return a new [`Clip`] which clips samples to between `lower` and `upper`.
         ///
         /// If `lower` is greater than `upper`, swap them so that [`Ord::clamp`] will not panic.
@@ -78,24 +78,24 @@ pub mod scale {
     use itertools::Itertools;
 
     /// An effect that scales a sample by a factor.
-    pub struct Scale {
+    pub struct ScaleEffect {
         factor: f64,
     }
 
-    impl Display for Scale {
+    impl Display for ScaleEffect {
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
             write!(f, "Scale")
         }
     }
 
-    impl Effect for Scale {
+    impl Effect for ScaleEffect {
         fn apply<'a>(&self, mut input: Stuff<'a>) -> Result<Stuff<'a>, EffectError> {
             input.samples = input.samples.iter().map(|sample| sample * self.factor).collect_vec().into();
             Ok(input)
         }
     }
 
-    impl Scale {
+    impl ScaleEffect {
         /// Return a new [`Scale`] which scales samples by `factor`.
         #[must_use]
         pub const fn new(factor: f64) -> Self {
