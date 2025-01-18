@@ -1,8 +1,8 @@
-use std::fs::{create_dir, remove_dir_all, File};
+use std::fs::{create_dir, read, read_dir, remove_dir_all, File};
 
 use blerp::{
     processing::generation::{harmonics, sawtooth_wave, sine_wave, square_wave, triangle_wave, Harmonic},
-    wavefile::WaveFile,
+    wavefile::{Format, WaveFile},
 };
 use itertools::Itertools;
 
@@ -62,4 +62,22 @@ fn main() {
     .unwrap()
     .write(&mut File::create(format!("{}/harmonic_sin(x)+0.5sin(2x).wav", env!("CARGO_TARGET_TMPDIR"))).unwrap())
     .unwrap();
+
+    for (wave_file, path) in read_dir(env!("CARGO_TARGET_TMPDIR")).unwrap().map(|entry| {
+        let path = entry.unwrap().path();
+        dbg!(read(&path).unwrap());
+        (WaveFile::read(&mut File::open(&path).unwrap()).unwrap(), path.file_name().unwrap().to_string_lossy().to_string())
+    }) {
+        println!("Wave file {} ({} bytes in data chunk):", path, wave_file.data.len());
+        println!(
+            "  Format: {}",
+            match wave_file.format {
+                Format::PulseCodeModulation => "PCM",
+                Format::FloatingPoint => "floating point",
+            }
+        );
+        println!("  Sample rate: {}", wave_file.sample_rate);
+        println!("  Channels: {}", wave_file.channels);
+        println!("  Bytes per sample: {}", wave_file.bytes_per_sample);
+    }
 }

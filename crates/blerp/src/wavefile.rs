@@ -312,9 +312,9 @@ mod read {
     }
 
     pub fn wave_file(input: &[u8]) -> IResult<&[u8], WaveFile, ReadError> {
-        let (remaining, ((format, channels, sample_rate, _block_size, bits_per_sample), data, _samples_length)) = all_consuming(map_res(
+        all_consuming(map_res(
             preceded(tag(b"RIFF"), length_value(le_u32, preceded(tag(b"WAVE"), permutation((format_chunk, data_chunk, opt(fact_chunk)))))),
-            |chunks @ ((format, channels, _sample_rate, block_size, bits_per_sample), data, samples_length)| {
+            |((format, channels, sample_rate, block_size, bits_per_sample), data, samples_length)| {
                 if let Some((span, samples_length)) = samples_length {
                     if data.len() / (usize::from(bits_per_sample) / 8) != samples_length as usize {
                         return Err(ReadError {
@@ -343,18 +343,15 @@ mod read {
                     }
                 }
 
-                Ok(chunks)
+                Ok(WaveFile {
+                    format,
+                    channels,
+                    sample_rate,
+                    bytes_per_sample: bits_per_sample / 8,
+                    data: data.into_fragment().to_vec(),
+                })
             },
-        ))(LocatedSpan::new(input))?;
-        Ok((
-            remaining.into_fragment(),
-            WaveFile {
-                format,
-                channels,
-                sample_rate,
-                bytes_per_sample: bits_per_sample / 8,
-                data: data.into_fragment().to_vec(),
-            },
-        ))
+        ))(LocatedSpan::new(input))
+        .map(|(remaining, wave_file)| (remaining.into_fragment(), wave_file))
     }
 }
