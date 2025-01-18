@@ -87,8 +87,6 @@ impl VoltApp {
 
 impl App for VoltApp {
     fn update(&mut self, ctx: &Context, _: &mut eframe::Frame) {
-        ctx.request_repaint();
-
         TopBottomPanel::top("navbar").frame(egui::Frame::default()).show(ctx, |ui| {
             ui.add(navbar(&self.themes));
         });

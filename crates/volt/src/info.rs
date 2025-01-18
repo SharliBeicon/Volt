@@ -124,15 +124,15 @@ pub fn dump() {
         }
     };
 
-    println!("OS: {}", std::env::consts::OS);
-    println!("Desktop Environment: {}", get_desktop_environment());
-    println!("Compositor: {}", get_compositor());
-    println!("CPU: {}", get_cpu_info());
-    println!("GPU: {}", get_gpu_info());
-    println!("OS Family: {}", std::env::consts::FAMILY);
-    println!("OS Distribution: {distro}");
-    println!("Architecture: {}", std::env::consts::ARCH);
-    println!("Version: {}", env!("CARGO_PKG_VERSION"));
+    println!("- OS: {}", std::env::consts::OS);
+    println!("- Desktop Environment: {}", get_desktop_environment());
+    println!("- Compositor: {}", get_compositor());
+    println!("- CPU: {}", get_cpu_info());
+    println!("- GPU: {}", get_gpu_info());
+    println!("- OS Family: {}", std::env::consts::FAMILY);
+    println!("- OS Distribution: {distro}");
+    println!("- Architecture: {}", std::env::consts::ARCH);
+    println!("- Version: {}", env!("CARGO_PKG_VERSION"));
 }
 
 pub fn handle_args() -> ControlFlow<(), ()> {
