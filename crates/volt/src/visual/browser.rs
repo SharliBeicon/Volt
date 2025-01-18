@@ -380,30 +380,26 @@ impl Browser {
         match entries {
             Some(result) => match result {
                 Ok(entries) => Rc::clone(entries).iter().map(|path| self.add_entry(path, ui)).reduce(Response::bitor),
-                Err(error) => Some(ui.label(format!("Failed to load contents: {error:?}"))),
+                Err(error) => Some(ui.label(format!("Failed to load contents: {error}"))),
             },
-            None => {
-                match rx.try_recv() {
-                    Ok(Ok(recv_entries)) => {
-                        *entries = Some(Ok(recv_entries.into()));
-                        #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
-                        let rotated = Image::new(include_image!("../images/icons/loading.png")).rotate(ui.input(|i| i.time * 6.0) as f32, vec2(0.5, 0.5));
-                        Some(ui.add_sized(vec2(16., 16.), rotated))
-                    }
-                    Ok(Err(error)) => {
-                        *entries = Some(Err(error));
-                        None
-                    }
-                    Err(TryRecvError::Disconnected) => {
-                        None
-                    }
-                    Err(TryRecvError::Empty) => {
-                        #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
-                        let rotated = Image::new(include_image!("../images/icons/loading.png")).rotate(ui.input(|i| i.time * 6.0) as f32, vec2(0.5, 0.5));
-                        Some(ui.add_sized(vec2(16., 16.), rotated))
-                    }
+            None => match rx.try_recv() {
+                Ok(Ok(recv_entries)) => {
+                    *entries = Some(Ok(recv_entries.into()));
+                    #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
+                    let rotated = Image::new(include_image!("../images/icons/loading.png")).rotate(ui.input(|i| i.time * 6.0) as f32, vec2(0.5, 0.5));
+                    Some(ui.add_sized(vec2(16., 16.), rotated))
                 }
-            }
+                Ok(Err(error)) => {
+                    *entries = Some(Err(error));
+                    None
+                }
+                Err(TryRecvError::Disconnected) => None,
+                Err(TryRecvError::Empty) => {
+                    #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
+                    let rotated = Image::new(include_image!("../images/icons/loading.png")).rotate(ui.input(|i| i.time * 6.0) as f32, vec2(0.5, 0.5));
+                    Some(ui.add_sized(vec2(16., 16.), rotated))
+                }
+            },
         }
     }
 
