@@ -389,12 +389,12 @@ impl Browser {
             }
             Ok(Err(error)) => {
                 error!("Unexpected error while adding directory contents to browser: {:?}", error);
-                // TODO better error handling (probably blocked by proper notification system)
+                // TODO: better error handling (probably blocked by proper notification system)
                 Some(ui.label("Error loading files. Check the standard error stream."))
             }
             Err(TryRecvError::Disconnected) => {
-                // TODO handle this error better (the thread panicked)
-                panic!("Directory contents were not loaded before the channel disconnected");
+                // TODO: show the actual error instead of this generic message.
+                Some(ui.label("Failed to load contents!"))
             }
             Err(TryRecvError::Empty) => {
                 #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
