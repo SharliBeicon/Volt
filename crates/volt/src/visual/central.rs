@@ -290,7 +290,6 @@ impl Central {
                                                     track: y,
                                                     data: ClipData::from_path((*path).clone()),
                                                 });
-                                                dbg!(&playlist.clips);
                                             }
                                         };
                                         #[allow(clippy::cast_precision_loss, reason = "rounding errors are negligible because this is a visual effect")]
