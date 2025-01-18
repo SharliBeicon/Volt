@@ -15,10 +15,7 @@ use std::{
     rc::Rc,
     str::FromStr,
     string::ToString,
-    sync::{
-        mpsc::{channel, Receiver, Sender, TryRecvError},
-        Arc,
-    },
+    sync::mpsc::{channel, Receiver, Sender, TryRecvError},
     thread::spawn,
     time::{Duration, Instant},
 };
@@ -28,8 +25,8 @@ use tracing::{error, trace};
 
 use egui::{
     emath::{self, TSTransform},
-    hex_color, include_image, remap, vec2, Button, CollapsingHeader, Color32, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, InnerResponse, LayerId, Margin, Order, Rect, Response,
-    RichText, ScrollArea, Sense, Separator, Shape, Stroke, Ui, UiBuilder, Widget,
+    include_image, remap, vec2, Button, CollapsingHeader, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, InnerResponse, LayerId, Margin, Order, Rect, Response, RichText, ScrollArea, Sense,
+    Separator, Shape, Stroke, Ui, UiBuilder, Widget,
 };
 
 use crate::visual::ThemeColors;
@@ -152,7 +149,7 @@ pub struct Browser {
     open_paths: Rc<RefCell<Vec<PathBuf>>>,
     preview: Preview,
     hovered_entry: Option<PathBuf>,
-    theme: ThemeColors,
+    theme: Rc<ThemeColors>,
     cached_entries: HashMap<PathBuf, CachedEntry>,
     watcher: RecommendedWatcher,
     watcher_rx: Receiver<notify::Result<Event>>,
@@ -164,7 +161,7 @@ struct CachedEntry {
 }
 
 impl Browser {
-    pub fn new(themes: ThemeColors) -> Self {
+    pub fn new(theme: Rc<ThemeColors>) -> Self {
         let (watcher_tx, watcher_rx) = channel();
         let watcher = recommended_watcher(watcher_tx).unwrap();
         Self {
@@ -206,7 +203,7 @@ impl Browser {
                 }
             },
             hovered_entry: None,
-            theme: themes,
+            theme,
             cached_entries: HashMap::new(),
             watcher,
             watcher_rx,
@@ -240,7 +237,8 @@ impl Browser {
             .inner
         }
     }
-    pub fn collapsing_header_icon(ui: &mut Ui, theme: &ThemeColors, path: &Path, name: Cow<'_, str>, hovered_entry: &Option<PathBuf>, openness: f32, response: &Response) {
+
+    pub fn collapsing_header_icon(ui: &mut Ui, theme: Rc<ThemeColors>, path: &Path, hovered_entry: &Option<PathBuf>, openness: f32, response: &Response) {
         let visuals = ui.style().interact(response);
 
         let rect = response.rect;
@@ -257,11 +255,10 @@ impl Browser {
 
         ui.painter().add(Shape::convex_polygon(
             points,
-            match (Some(path) == hovered_entry.as_deref(), matches!(&name, &Cow::Owned(_))) {
-                (true, true) => theme.browser_folder_hover_text,
-                (true, false) => theme.browser_folder_hover_text,
-                (false, true) => theme.browser_folder_text,
-                (false, false) => theme.browser_folder_text,
+            if Some(path) == hovered_entry.as_deref() {
+                theme.browser_folder_hover_text
+            } else {
+                theme.browser_folder_text
             },
             Stroke::NONE,
         ));
@@ -273,13 +270,7 @@ impl Browser {
         egui::Frame::default()
             .inner_margin(Margin::same(8.))
             .show(ui, |ui| {
-                ui.vertical(|ui| {
-                    Rc::clone(&self.open_paths)
-                        .borrow()
-                        .iter()
-                        .map(|path| self.add_entry(path, ui))
-                        .reduce(Response::bitor)
-                })
+                ui.vertical(|ui| Rc::clone(&self.open_paths).borrow().iter().map(|path| self.add_entry(path, ui)).reduce(Response::bitor))
             })
             .response
     }
@@ -298,76 +289,36 @@ impl Browser {
         //     println!("{:?}", path);
         // }
 
-        // I should actually learn proper rust data structuring because this is hell sdfjlkgdjflkgjdlfkbjlkdfjbldjfbl
-
         let kind = EntryKind::from(&path);
         let name = path.file_name().map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
-        let button = |hovered_entry: &Option<PathBuf>| {
-            // TODO: Refactor the match (as well as other similar match expressions)
-            // The suggestion on the rust discord for this was to use named locals (?) not really sure what that means
+
+        let button = |hovered_entry: &Option<PathBuf>, theme: &Rc<ThemeColors>| {
             Button::new(RichText::new(&*name).color(match (Some(path) == hovered_entry.as_deref(), matches!(&name, &Cow::Owned(_))) {
-                (true, true) => self.theme.browser_unselected_hover_button_fg_invalid,
-                (true, false) => self.theme.browser_unselected_hover_button_fg,
-                (false, true) => self.theme.browser_unselected_button_fg_invalid,
-                (false, false) => self.theme.browser_unselected_button_fg,
+                (true, true) => theme.browser_unselected_hover_button_fg_invalid,
+                (true, false) => theme.browser_unselected_hover_button_fg,
+                (false, true) => theme.browser_unselected_button_fg_invalid,
+                (false, false) => theme.browser_unselected_button_fg,
             }))
             .frame(false)
         };
+
         let response = match kind {
-            EntryKind::Audio => {
-                let mut add_contents = |ui: &mut Ui| {
-                    ui.horizontal(|ui| {
-                        ui.add(Image::new(include_image!("../images/icons/audio.png")))
-                            .union(ui.add(button(&self.hovered_entry)))
-                            .pipe(|response| {
-                                let data = self.preview.data();
-                                if let Some(data @ PreviewData { length: Some(length), .. }) = self.preview.path.as_ref().filter(|preview_path| *preview_path == &*path).zip(data).map(|(_, data)| data)
-                                {
-                                    ui.ctx().request_repaint();
-                                    response.union(ui.label(format!(
-                                        "{:>02}:{:>02} of {:>02}:{:>02}",
-                                        data.progress().as_secs() / 60,
-                                        data.progress().as_secs() % 60,
-                                        length.as_secs() / 60,
-                                        length.as_secs() % 60
-                                    )))
-                                } else {
-                                    response
-                                }
-                            })
-                    })
-                };
-                let mut response = if ui.ctx().is_being_dragged(Id::new(path.to_owned())) {
-                    DragAndDrop::set_payload(ui.ctx(), path.to_path_buf());
-                    let layer_id = LayerId::new(Order::Tooltip, Id::new(path.to_owned()));
-                    let response = ui.scope_builder(UiBuilder::new().layer_id(layer_id), add_contents).response;
-                    if let Some(pointer_pos) = ui.ctx().pointer_interact_pos() {
-                        let delta = pointer_pos - response.rect.center();
-                        ui.ctx().transform_layer_shapes(layer_id, TSTransform::from_translation(delta));
-                    }
-                    response
-                } else {
-                    let response = ui.scope(&mut add_contents).response;
-                    let dnd_response = ui.interact(response.rect, Id::new(path.to_owned()), Sense::click_and_drag()).on_hover_cursor(CursorIcon::Grab);
-                    dnd_response | response
-                };
-                response.layer_id = ui.layer_id();
-                response
-            }
-            EntryKind::File => Self::add_file(ui, button(&self.hovered_entry)),
+            EntryKind::Audio => self.add_audio_entry(path, ui, button),
+            EntryKind::File => Self::add_file(ui, button(&self.hovered_entry, &self.theme)),
             EntryKind::Directory => {
-                let color = match (Some(path) == self.hovered_entry.as_deref(), matches!(&name, &Cow::Owned(_))) {
-                        (true, true) => self.theme.browser_folder_hover_text,
-                        (true, false) => self.theme.browser_folder_hover_text,
-                        (false, true) => self.theme.browser_folder_text,
-                        (false, false) => self.theme.browser_folder_text,
-                    };
-                let response = CollapsingHeader::new(
-                    RichText::new(name.clone()).color(color),
-                )
+                let response = CollapsingHeader::new(RichText::new(name.clone()).color(if Some(path) == self.hovered_entry.as_deref() {
+                    self.theme.browser_folder_hover_text
+                } else {
+                    self.theme.browser_folder_text
+                }))
                 .id_salt(path)
-                .icon(|ui, openness, response| {
-                    Browser::collapsing_header_icon(ui, &self.theme, path, name, &self.hovered_entry, openness, response);
+                .icon({
+                    let theme = Rc::clone(&self.theme);
+                    let hovered_entry = self.hovered_entry.clone();
+                    let path = path.to_path_buf();
+                    move |ui, openness, response| {
+                        Self::collapsing_header_icon(ui, theme, &path, &hovered_entry, openness, response);
+                    }
                 })
                 .show(ui, |ui| {
                     self.add_directory_contents(path, ui);
@@ -375,10 +326,8 @@ impl Browser {
                 response.header_response
             }
         };
-
         let response = response.on_hover_cursor(CursorIcon::PointingHand);
 
-        // Click action
         if response.clicked() {
             match kind {
                 EntryKind::Audio => {
@@ -393,7 +342,6 @@ impl Browser {
             }
         }
 
-        // Hover action
         if response.hovered() {
             self.hovered_entry = Some(path.to_path_buf());
         } else {
@@ -403,6 +351,46 @@ impl Browser {
                 self.hovered_entry = None;
             }
         }
+        response
+    }
+
+    fn add_audio_entry(&mut self, path: &Path, ui: &mut Ui, button: impl Fn(&Option<PathBuf>, &Rc<ThemeColors>) -> Button<'static>) -> Response {
+        let mut add_contents = |ui: &mut Ui| {
+            ui.horizontal(|ui| {
+                ui.add(Image::new(include_image!("../images/icons/audio.png")))
+                    .union(ui.add(button(&self.hovered_entry, &self.theme)))
+                    .pipe(|response| {
+                        let data = self.preview.data();
+                        if let Some(data @ PreviewData { length: Some(length), .. }) = self.preview.path.as_ref().filter(|preview_path| *preview_path == path).zip(data).map(|(_, data)| data) {
+                            ui.ctx().request_repaint();
+                            response.union(ui.label(format!(
+                                "{:>02}:{:>02} of {:>02}:{:>02}",
+                                data.progress().as_secs() / 60,
+                                data.progress().as_secs() % 60,
+                                length.as_secs() / 60,
+                                length.as_secs() % 60
+                            )))
+                        } else {
+                            response
+                        }
+                    })
+            })
+        };
+        let mut response = if ui.ctx().is_being_dragged(Id::new(path.to_owned())) {
+            DragAndDrop::set_payload(ui.ctx(), path.to_path_buf());
+            let layer_id = LayerId::new(Order::Tooltip, Id::new(path.to_owned()));
+            let response = ui.scope_builder(UiBuilder::new().layer_id(layer_id), add_contents).response;
+            if let Some(pointer_pos) = ui.ctx().pointer_interact_pos() {
+                let delta = pointer_pos - response.rect.center();
+                ui.ctx().transform_layer_shapes(layer_id, TSTransform::from_translation(delta));
+            }
+            response
+        } else {
+            let response = ui.scope(&mut add_contents).response;
+            let dnd_response = ui.interact(response.rect, Id::new(path.to_owned()), Sense::click_and_drag()).on_hover_cursor(CursorIcon::Grab);
+            dnd_response | response
+        };
+        response.layer_id = ui.layer_id();
         response
     }
 

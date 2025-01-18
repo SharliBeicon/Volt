@@ -9,7 +9,7 @@ pub mod navbar;
 pub mod switch;
 
 // Theming
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ThemeColors {
     pub navbar_background_gradient_top: Color32,
     pub navbar_background_gradient_bottom: Color32,
