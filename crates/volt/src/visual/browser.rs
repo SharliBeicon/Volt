@@ -271,6 +271,7 @@ impl Browser {
                             .pipe(|response| {
                                 let data = self.preview.data();
                                 if let Some(data @ PreviewData { length: Some(length), .. }) = self.preview.path.as_ref().filter(|preview_path| preview_path == &path).zip(data).map(|(_, data)| data) {
+                                    ui.ctx().request_repaint();
                                     response.union(ui.label(format!(
                                         "{:>02}:{:>02} of {:>02}:{:>02}",
                                         data.progress().as_secs() / 60,
@@ -387,6 +388,7 @@ impl Browser {
                     *entries = Some(Ok(recv_entries.into()));
                     #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
                     let rotated = Image::new(include_image!("../images/icons/loading.png")).rotate(ui.input(|i| i.time * 6.0) as f32, vec2(0.5, 0.5));
+                    ui.ctx().request_repaint();
                     Some(ui.add_sized(vec2(16., 16.), rotated))
                 }
                 Ok(Err(error)) => {
@@ -397,6 +399,7 @@ impl Browser {
                 Err(TryRecvError::Empty) => {
                     #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
                     let rotated = Image::new(include_image!("../images/icons/loading.png")).rotate(ui.input(|i| i.time * 6.0) as f32, vec2(0.5, 0.5));
+                    ui.ctx().request_repaint();
                     Some(ui.add_sized(vec2(16., 16.), rotated))
                 }
             },
