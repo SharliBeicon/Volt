@@ -15,7 +15,10 @@ use std::{
     rc::Rc,
     str::FromStr,
     string::ToString,
-    sync::mpsc::{channel, Receiver, Sender, TryRecvError},
+    sync::{
+        mpsc::{channel, Receiver, Sender, TryRecvError},
+        Arc,
+    },
     thread::spawn,
     time::{Duration, Instant},
 };
@@ -24,8 +27,9 @@ use tap::Pipe;
 use tracing::{error, trace};
 
 use egui::{
-    emath::TSTransform, include_image, vec2, Button, CollapsingHeader, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, InnerResponse, LayerId, Margin, Order, Response, RichText, ScrollArea,
-    Sense, Separator, Ui, UiBuilder, Widget,
+    emath::{self, TSTransform},
+    hex_color, include_image, remap, vec2, Button, CollapsingHeader, Color32, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, InnerResponse, LayerId, Margin, Order, Rect, Response,
+    RichText, ScrollArea, Sense, Separator, Shape, Stroke, Ui, UiBuilder, Widget,
 };
 
 use crate::visual::ThemeColors;
@@ -236,6 +240,32 @@ impl Browser {
             .inner
         }
     }
+    pub fn collapsing_header_icon(ui: &mut Ui, theme: &ThemeColors, path: &Path, name: Cow<'_, str>, hovered_entry: &Option<PathBuf>, openness: f32, response: &Response) {
+        let visuals = ui.style().interact(response);
+
+        let rect = response.rect;
+
+        // Draw a pointy triangle arrow:
+        let rect = Rect::from_center_size(rect.center(), vec2(rect.width(), rect.height()) * 0.75);
+        let rect = rect.expand(visuals.expansion);
+        let mut points = vec![rect.left_top(), rect.right_top(), rect.center_bottom()];
+        use std::f32::consts::TAU;
+        let rotation = emath::Rot2::from_angle(remap(openness, 0.0..=1.0, -TAU / 4.0..=0.0));
+        for p in &mut points {
+            *p = rect.center() + rotation * (*p - rect.center());
+        }
+
+        ui.painter().add(Shape::convex_polygon(
+            points,
+            match (Some(path) == hovered_entry.as_deref(), matches!(&name, &Cow::Owned(_))) {
+                (true, true) => theme.browser_folder_hover_text,
+                (true, false) => theme.browser_folder_hover_text,
+                (false, true) => theme.browser_folder_text,
+                (false, false) => theme.browser_folder_text,
+            },
+            Stroke::NONE,
+        ));
+    }
 
     // Other
     fn add_files(&mut self, ui: &mut Ui) -> Response {
@@ -243,7 +273,13 @@ impl Browser {
         egui::Frame::default()
             .inner_margin(Margin::same(8.))
             .show(ui, |ui| {
-                ui.vertical(|ui| Rc::clone(&self.open_paths).borrow().iter().map(|path| self.add_entry(path, ui)).reduce(Response::bitor))
+                ui.vertical(|ui| {
+                    Rc::clone(&self.open_paths)
+                        .borrow()
+                        .iter()
+                        .map(|path| self.add_entry(path, ui))
+                        .reduce(Response::bitor)
+                })
             })
             .response
     }
@@ -261,9 +297,14 @@ impl Browser {
         // if widget_pos_y + 24. + 100. <= clip_min {
         //     println!("{:?}", path);
         // }
-        let kind = EntryKind::from(path);
+
+        // I should actually learn proper rust data structuring because this is hell sdfjlkgdjflkgjdlfkbjlkdfjbldjfbl
+
+        let kind = EntryKind::from(&path);
         let name = path.file_name().map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
         let button = |hovered_entry: &Option<PathBuf>| {
+            // TODO: Refactor the match (as well as other similar match expressions)
+            // The suggestion on the rust discord for this was to use named locals (?) not really sure what that means
             Button::new(RichText::new(&*name).color(match (Some(path) == hovered_entry.as_deref(), matches!(&name, &Cow::Owned(_))) {
                 (true, true) => self.theme.browser_unselected_hover_button_fg_invalid,
                 (true, false) => self.theme.browser_unselected_hover_button_fg,
@@ -280,7 +321,8 @@ impl Browser {
                             .union(ui.add(button(&self.hovered_entry)))
                             .pipe(|response| {
                                 let data = self.preview.data();
-                                if let Some(data @ PreviewData { length: Some(length), .. }) = self.preview.path.as_ref().filter(|preview_path| preview_path == &path).zip(data).map(|(_, data)| data) {
+                                if let Some(data @ PreviewData { length: Some(length), .. }) = self.preview.path.as_ref().filter(|preview_path| *preview_path == &*path).zip(data).map(|(_, data)| data)
+                                {
                                     ui.ctx().request_repaint();
                                     response.union(ui.label(format!(
                                         "{:>02}:{:>02} of {:>02}:{:>02}",
@@ -295,9 +337,9 @@ impl Browser {
                             })
                     })
                 };
-                let mut response = if ui.ctx().is_being_dragged(Id::new(path)) {
+                let mut response = if ui.ctx().is_being_dragged(Id::new(path.to_owned())) {
                     DragAndDrop::set_payload(ui.ctx(), path.to_path_buf());
-                    let layer_id = LayerId::new(Order::Tooltip, Id::new(path));
+                    let layer_id = LayerId::new(Order::Tooltip, Id::new(path.to_owned()));
                     let response = ui.scope_builder(UiBuilder::new().layer_id(layer_id), add_contents).response;
                     if let Some(pointer_pos) = ui.ctx().pointer_interact_pos() {
                         let delta = pointer_pos - response.rect.center();
@@ -306,7 +348,7 @@ impl Browser {
                     response
                 } else {
                     let response = ui.scope(&mut add_contents).response;
-                    let dnd_response = ui.interact(response.rect, Id::new(path), Sense::click_and_drag()).on_hover_cursor(CursorIcon::Grab);
+                    let dnd_response = ui.interact(response.rect, Id::new(path.to_owned()), Sense::click_and_drag()).on_hover_cursor(CursorIcon::Grab);
                     dnd_response | response
                 };
                 response.layer_id = ui.layer_id();
@@ -314,13 +356,29 @@ impl Browser {
             }
             EntryKind::File => Self::add_file(ui, button(&self.hovered_entry)),
             EntryKind::Directory => {
-                let response = CollapsingHeader::new(name).id_salt(path).show(ui, |ui| {
+                let color = match (Some(path) == self.hovered_entry.as_deref(), matches!(&name, &Cow::Owned(_))) {
+                        (true, true) => self.theme.browser_folder_hover_text,
+                        (true, false) => self.theme.browser_folder_hover_text,
+                        (false, true) => self.theme.browser_folder_text,
+                        (false, false) => self.theme.browser_folder_text,
+                    };
+                let response = CollapsingHeader::new(
+                    RichText::new(name.clone()).color(color),
+                )
+                .id_salt(path)
+                .icon(|ui, openness, response| {
+                    Browser::collapsing_header_icon(ui, &self.theme, path, name, &self.hovered_entry, openness, response);
+                })
+                .show(ui, |ui| {
                     self.add_directory_contents(path, ui);
                 });
                 response.header_response
             }
         };
+
         let response = response.on_hover_cursor(CursorIcon::PointingHand);
+
+        // Click action
         if response.clicked() {
             match kind {
                 EntryKind::Audio => {
@@ -334,8 +392,16 @@ impl Browser {
                 EntryKind::Directory => {}
             }
         }
+
+        // Hover action
         if response.hovered() {
             self.hovered_entry = Some(path.to_path_buf());
+        } else {
+            let mut pbuf = PathBuf::new();
+            pbuf.push(Path::new(""));
+            if self.hovered_entry.as_ref().unwrap_or(&pbuf).to_str().unwrap_or_default() == path.to_path_buf().to_str().unwrap_or_default() {
+                self.hovered_entry = None;
+            }
         }
         response
     }
@@ -403,9 +469,7 @@ impl Browser {
                     None
                 }
                 Err(TryRecvError::Disconnected) => None,
-                Err(TryRecvError::Empty) => {
-                    self.anim_loading(ui)
-                }
+                Err(TryRecvError::Empty) => self.anim_loading(ui),
             },
         }
     }

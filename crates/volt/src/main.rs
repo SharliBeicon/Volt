@@ -1,5 +1,5 @@
 #![warn(clippy::pedantic, clippy::nursery, clippy::allow_attributes_without_reason, clippy::undocumented_unsafe_blocks, clippy::clone_on_ref_ptr)]
-use std::io::{BufReader, Cursor};
+use std::{io::{BufReader, Cursor}, sync::Arc};
 
 use eframe::{egui, run_native, App, CreationContext, NativeOptions};
 use egui::{CentralPanel, Context, FontData, FontDefinitions, FontFamily, FontId, IconData, SidePanel, TextStyle, TopBottomPanel, ViewportBuilder};
