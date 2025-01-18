@@ -209,6 +209,15 @@ impl Browser {
         }
     }
 
+    // Animations
+    fn anim_loading(&mut self, ui: &mut Ui) -> Option<Response> {
+        #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
+        let rotated = Image::new(include_image!("../images/icons/loading.png")).rotate(ui.input(|i| i.time * 6.0) as f32, vec2(0.5, 0.5));
+        ui.ctx().request_repaint();
+        Some(ui.add_sized(vec2(16., 16.), rotated))
+    }
+
+    // Widgets
     pub fn button<'a>(theme: &'a ThemeColors, selected: bool, text: &'a str, hovered: bool) -> impl Widget + use<'a> {
         move |ui: &mut Ui| {
             let color = if selected {
@@ -228,6 +237,7 @@ impl Browser {
         }
     }
 
+    // Other
     fn add_files(&mut self, ui: &mut Ui) -> Response {
         self.handle_file_or_folder_drop(ui.ctx());
         egui::Frame::default()
@@ -386,10 +396,7 @@ impl Browser {
             None => match rx.try_recv() {
                 Ok(Ok(recv_entries)) => {
                     *entries = Some(Ok(recv_entries.into()));
-                    #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
-                    let rotated = Image::new(include_image!("../images/icons/loading.png")).rotate(ui.input(|i| i.time * 6.0) as f32, vec2(0.5, 0.5));
-                    ui.ctx().request_repaint();
-                    Some(ui.add_sized(vec2(16., 16.), rotated))
+                    self.anim_loading(ui)
                 }
                 Ok(Err(error)) => {
                     *entries = Some(Err(error));
@@ -397,10 +404,7 @@ impl Browser {
                 }
                 Err(TryRecvError::Disconnected) => None,
                 Err(TryRecvError::Empty) => {
-                    #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
-                    let rotated = Image::new(include_image!("../images/icons/loading.png")).rotate(ui.input(|i| i.time * 6.0) as f32, vec2(0.5, 0.5));
-                    ui.ctx().request_repaint();
-                    Some(ui.add_sized(vec2(16., 16.), rotated))
+                    self.anim_loading(ui)
                 }
             },
         }
