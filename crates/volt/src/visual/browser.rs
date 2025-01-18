@@ -385,7 +385,8 @@ impl Browser {
         match rx.try_recv() {
             Ok(Ok(recv_entries)) => {
                 *entries = Some(recv_entries.into());
-                let rotated = Image::new(include_image!("../images/icons/loading.png")).rotate(ui.input(|i| i.time * 6.0) as f32 % 360., vec2(0.5, 0.5));
+                #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
+                let rotated = Image::new(include_image!("../images/icons/loading.png")).rotate(ui.input(|i| i.time * 6.0) as f32, vec2(0.5, 0.5));
                 Some(ui.add_sized(vec2(16., 16.), rotated))
             }
             Ok(Err(error)) => {
@@ -398,9 +399,10 @@ impl Browser {
                 panic!("Directory contents were not loaded before the channel disconnected");
             }
             Err(TryRecvError::Empty) => {
-                let rotated = Image::new(include_image!("../images/icons/loading.png")).rotate(ui.input(|i| i.time * 6.0) as f32 % 360., vec2(0.5, 0.5));
+                #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
+                let rotated = Image::new(include_image!("../images/icons/loading.png")).rotate(ui.input(|i| i.time * 6.0) as f32, vec2(0.5, 0.5));
                 Some(ui.add_sized(vec2(16., 16.), rotated))
-            },
+            }
         }
     }
 
