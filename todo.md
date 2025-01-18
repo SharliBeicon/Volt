@@ -12,7 +12,7 @@ This is a list of things to do (or things that have been done) for Volt!
 | ✔️      | All      | Rendering | Render Background                                                                                            |
 | ✔️      | All      | Rendering | Render Navbar                                                                                                |
 | ✔️      | All      | Rendering | Render Browser                                                                                               |
-| ❌      | All      | Rendering | Render Playlist                                                                                              |
+| ✔️      | All      | Rendering | Render Playlist                                                                                              |
 | ✔️      | All      | Browser   | Fix mouse cursor not staying on horizontal drag when resizing the browser                                    |
 | ✔️      | All      | Browser   | Make browser resizable to practically any width within the viewport                                          |
 | ❌      | All      | Preview   | FIXME: Temporary rodio playback, might need to use cpal or make rodio proper (browser.rs:13, browser.rs:492) |
@@ -26,4 +26,4 @@ This is a list of things to do (or things that have been done) for Volt!
 | ✔️      | All      | CLI       | TODO: could use the `human_panic` crate (info.rs:157)                                                        |
 | ✔️      | All      | All       | Componentize the entire UI                                                                                   |
 | ✔️      | All      | Navbar    | Make navbar fully line up with the top of the browser (blocked by componentization)                          |
-| ❌      | All      | Playlist  | Draw playlist (blocked by componentization)                                                                  |
+| ✔️      | All      | Playlist  | Draw playlist (blocked by componentization)                                                                  |
