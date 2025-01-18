@@ -1,4 +1,4 @@
-#![warn(clippy::pedantic, clippy::nursery, clippy::allow_attributes_without_reason, clippy::undocumented_unsafe_blocks)]
+#![warn(clippy::pedantic, clippy::nursery, clippy::allow_attributes_without_reason, clippy::undocumented_unsafe_blocks, clippy::clone_on_ref_ptr)]
 use std::io::{BufReader, Cursor};
 
 use eframe::{egui, run_native, App, CreationContext, NativeOptions};

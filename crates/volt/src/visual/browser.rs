@@ -1,5 +1,3 @@
-#![warn(clippy::clone_on_ref_ptr)]
-
 use blerp::utils::zip;
 use itertools::Itertools;
 use notify::{recommended_watcher, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -184,7 +182,7 @@ impl Browser {
                         let source = Decoder::new(BufReader::new(File::open(&path).unwrap())).unwrap();
                         let empty = sink.empty();
                         sink.stop();
-                        if last_path != Some(path.clone()) || empty {
+                        if last_path.is_none_or(|last_path| last_path != path) || empty {
                             file_data_tx
                                 .send(PreviewData {
                                     length: source.total_duration(),
@@ -193,7 +191,7 @@ impl Browser {
                                 .unwrap();
                             sink.append(source);
                         }
-                        last_path = Some(path.clone());
+                        last_path = Some(path);
                     }
                 });
                 Preview {
@@ -407,12 +405,11 @@ impl Browser {
     }
 
     fn handle_file_or_folder_drop(&self, ctx: &Context) {
-        let files: Vec<_> = ctx
-            .input(|input| input.raw.dropped_files.iter().map(move |DroppedFile { path, .. }| path.clone().ok_or(())).try_collect())
-            .unwrap_or_default();
-        for path in files {
-            self.open_paths.borrow_mut().push(path);
-        }
+        ctx.input(|input| {
+            for path in input.raw.dropped_files.iter().filter_map(|DroppedFile { path, .. }| path.as_deref()) {
+                self.open_paths.borrow_mut().push(path.to_path_buf());
+            }
+        });
     }
 
     fn add_file(ui: &mut Ui, button: Button<'_>) -> Response {
