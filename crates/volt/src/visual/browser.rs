@@ -7,6 +7,7 @@ use std::{
     borrow::Cow,
     cell::RefCell,
     collections::HashMap,
+    f32::consts::PI,
     fs::{read_dir, DirEntry, File},
     io::{self, BufReader},
     iter::Iterator,
@@ -211,11 +212,11 @@ impl Browser {
     }
 
     // Animations
-    fn anim_loading(&mut self, ui: &mut Ui) -> Option<Response> {
+    fn loading(ui: &mut Ui) -> Response {
         #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
         let rotated = Image::new(include_image!("../images/icons/loading.png")).rotate(ui.input(|i| i.time * 6.0) as f32, vec2(0.5, 0.5));
         ui.ctx().request_repaint();
-        Some(ui.add_sized(vec2(16., 16.), rotated))
+        ui.add_sized(vec2(16., 16.), rotated)
     }
 
     // Widgets
@@ -238,24 +239,18 @@ impl Browser {
         }
     }
 
-    pub fn collapsing_header_icon(ui: &mut Ui, theme: Rc<ThemeColors>, path: &Path, hovered_entry: &Option<PathBuf>, openness: f32, response: &Response) {
+    pub fn collapsing_header_icon(ui: &Ui, theme: &Rc<ThemeColors>, path: &Path, hovered_entry: Option<&Path>, openness: f32, response: &Response) {
         let visuals = ui.style().interact(response);
-
-        let rect = response.rect;
-
-        // Draw a pointy triangle arrow:
-        let rect = Rect::from_center_size(rect.center(), vec2(rect.width(), rect.height()) * 0.75);
-        let rect = rect.expand(visuals.expansion);
+        let rect = Rect::from_center_size(response.rect.center(), response.rect.size() * 0.75).expand(visuals.expansion);
         let mut points = vec![rect.left_top(), rect.right_top(), rect.center_bottom()];
-        use std::f32::consts::TAU;
-        let rotation = emath::Rot2::from_angle(remap(openness, 0.0..=1.0, -TAU / 4.0..=0.0));
+        let rotation = emath::Rot2::from_angle(remap(openness, 0. ..=1., -PI / 2. ..=0.));
         for p in &mut points {
             *p = rect.center() + rotation * (*p - rect.center());
         }
 
         ui.painter().add(Shape::convex_polygon(
             points,
-            if Some(path) == hovered_entry.as_deref() {
+            if Some(path) == hovered_entry {
                 theme.browser_folder_hover_text
             } else {
                 theme.browser_folder_text
@@ -264,7 +259,6 @@ impl Browser {
         ));
     }
 
-    // Other
     fn add_files(&mut self, ui: &mut Ui) -> Response {
         self.handle_file_or_folder_drop(ui.ctx());
         egui::Frame::default()
@@ -317,7 +311,7 @@ impl Browser {
                     let hovered_entry = self.hovered_entry.clone();
                     let path = path.to_path_buf();
                     move |ui, openness, response| {
-                        Self::collapsing_header_icon(ui, theme, &path, &hovered_entry, openness, response);
+                        Self::collapsing_header_icon(ui, &theme, &path, hovered_entry.as_deref(), openness, response);
                     }
                 })
                 .show(ui, |ui| {
@@ -450,14 +444,14 @@ impl Browser {
             None => match rx.try_recv() {
                 Ok(Ok(recv_entries)) => {
                     *entries = Some(Ok(recv_entries.into()));
-                    self.anim_loading(ui)
+                    Some(Self::loading(ui))
                 }
                 Ok(Err(error)) => {
                     *entries = Some(Err(error));
                     None
                 }
                 Err(TryRecvError::Disconnected) => None,
-                Err(TryRecvError::Empty) => self.anim_loading(ui),
+                Err(TryRecvError::Empty) => Some(Self::loading(ui)),
             },
         }
     }
