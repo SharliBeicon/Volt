@@ -266,7 +266,6 @@ mod read {
                 ),
             ),
             |((format_span, format), (channels_span, channels), sample_rate, (bytes_per_second_span, bytes_per_second), block_size, bits_per_sample, has_extension)| {
-                // TODO use consumed to make proper positions
                 if sample_rate * u32::from(block_size) != bytes_per_second {
                     return Err(ReadError {
                         kind: ReadErrorKind::DataRateMismatch,
