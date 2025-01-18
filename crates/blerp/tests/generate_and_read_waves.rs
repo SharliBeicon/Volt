@@ -65,8 +65,7 @@ fn main() {
 
     for (wave_file, path) in read_dir(env!("CARGO_TARGET_TMPDIR")).unwrap().map(|entry| {
         let path = entry.unwrap().path();
-        dbg!(read(&path).unwrap());
-        (WaveFile::read(&mut File::open(&path).unwrap()).unwrap(), path.file_name().unwrap().to_string_lossy().to_string())
+        (WaveFile::read(&read(&path).unwrap()).unwrap(), path.file_name().unwrap().to_string_lossy().to_string())
     }) {
         println!("Wave file {} ({} bytes in data chunk):", path, wave_file.data.len());
         println!(

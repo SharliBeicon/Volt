@@ -1,14 +1,19 @@
 use std::{
     fmt::Debug,
-    io::{self, Read, Write},
+    hint::unreachable_unchecked,
+    io::{self, Write},
     mem::size_of,
     num::NonZeroU16,
 };
 
 use cpal::FromSample;
 use itertools::Itertools;
-use nom::error::{ErrorKind, FromExternalError, ParseError};
-use nom_bufreader::{bufreader::BufReader, Parse};
+use nom::{
+    combinator::complete,
+    error::{ErrorKind, FromExternalError, ParseError},
+    Err,
+};
+use nom_locate::LocatedSpan;
 use num::traits::ToBytes;
 use read::{wave_file, Input};
 use thiserror::Error;
@@ -210,15 +215,17 @@ impl WaveFile {
         Ok(())
     }
 
-    /// Read a [`WaveFile`] from a reader.
+    /// Read a [`WaveFile`] from some bytes.
     /// # Errors
     /// Returns a [`ReadError`] if the file is not a valid wave file.
-    ///
-    /// Returns an [`io::Error`] if reading from the reader fails.
-    ///
-    /// See [`nom_bufreader::Error`] for details.
-    pub fn read(reader: &mut impl Read) -> Result<Self, nom_bufreader::Error<ReadError>> {
-        BufReader::new(reader).parse(wave_file)
+    pub fn read(bytes: &[u8]) -> Result<Self, ReadError> {
+        complete(wave_file)(LocatedSpan::new(bytes)).map(|(_, wave_file)| wave_file).map_err(|error| match error {
+            Err::Incomplete(_) => {
+                // SAFETY: we called `complete`, so `Err::Incomplete` is impossible.
+                unsafe { unreachable_unchecked() }
+            }
+            Err::Error(error) | Err::Failure(error) => error,
+        })
     }
 }
 
@@ -227,10 +234,10 @@ mod read {
 
     use nom::{
         branch::{alt, permutation},
-        bytes::streaming::{tag, take},
+        bytes::complete::{tag, take},
         combinator::{all_consuming, consumed, map, map_res, opt, verify},
         multi::{length_data, length_value},
-        number::streaming::{le_u16, le_u32},
+        number::complete::{le_u16, le_u32},
         sequence::{preceded, terminated, tuple},
         IResult,
     };
@@ -311,7 +318,7 @@ mod read {
         preceded(tag(b"fact\x04\0\0\0"), consumed(le_u32))(input)
     }
 
-    pub fn wave_file(input: &[u8]) -> IResult<&[u8], WaveFile, ReadError> {
+    pub fn wave_file(input: Input) -> IResult<Input, WaveFile, ReadError> {
         all_consuming(map_res(
             preceded(tag(b"RIFF"), length_value(le_u32, preceded(tag(b"WAVE"), permutation((format_chunk, data_chunk, opt(fact_chunk)))))),
             |((format, channels, sample_rate, block_size, bits_per_sample), data, samples_length)| {
@@ -351,7 +358,6 @@ mod read {
                     data: data.into_fragment().to_vec(),
                 })
             },
-        ))(LocatedSpan::new(input))
-        .map(|(remaining, wave_file)| (remaining.into_fragment(), wave_file))
+        ))(input)
     }
 }
