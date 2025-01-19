@@ -1,8 +1,6 @@
 use blerp::utils::zip;
-use dashmap::DashMap;
 use itertools::Itertools;
 use notify::{recommended_watcher, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use once_cell::sync::Lazy;
 use open::that_detached;
 use rodio::{Decoder, OutputStream, Sink, Source};
 use std::{
@@ -18,7 +16,10 @@ use std::{
     rc::Rc,
     str::FromStr,
     string::ToString,
-    sync::{mpsc::{channel, Receiver, Sender, TryRecvError}, RwLock},
+    sync::{
+        mpsc::{channel, Receiver, Sender, TryRecvError},
+        Arc, RwLock,
+    },
     thread::spawn,
     time::{Duration, Instant},
 };
@@ -27,7 +28,9 @@ use tap::Pipe;
 use tracing::{error, trace};
 
 use egui::{
-    emath::{self, TSTransform}, include_image, pos2, remap, scroll_area::ScrollBarVisibility, vec2, Button, CollapsingHeader, Color32, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, InnerResponse, LayerId, Margin, Order, Rect, Response, RichText, ScrollArea, Sense, Separator, Shape, Stroke, Ui, UiBuilder, Vec2, Vec2b, Widget
+    emath::{self, TSTransform},
+    include_image, pos2, remap, vec2, Button, CollapsingHeader, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, InnerResponse, LayerId, Margin, Order, Rect, Response, RichText, ScrollArea,
+    Sense, Separator, Shape, Stroke, Ui, UiBuilder, Widget,
 };
 
 use crate::visual::ThemeColors;
@@ -78,37 +81,6 @@ pub enum EntryKind {
     Directory,
     Audio,
     File,
-}
-
-static ENTRY_KIND_CACHE: Lazy<DashMap<PathBuf, EntryKind>> =
-    Lazy::new(|| DashMap::with_capacity(1000));
-
-impl<P: AsRef<Path>> From<P> for EntryKind {
-    fn from(value: P) -> Self {
-        let path = value.as_ref();
-
-        if let Some(entry) = ENTRY_KIND_CACHE.get(path) {
-            return *entry;
-        }
-
-        let kind = if path.is_dir() {
-            Self::Directory
-        } else {
-            match path.extension().and_then(|ext| ext.to_str()) {
-                Some(ext) => {
-                    if AUDIO_EXTENSIONS.binary_search(&ext.to_ascii_lowercase().as_str()).is_ok() {
-                        Self::Audio
-                    } else {
-                        Self::File
-                    }
-                }
-                None => Self::File
-            }
-        };
-
-        ENTRY_KIND_CACHE.insert(path.to_path_buf(), kind);
-        kind
-    }
 }
 
 pub struct Preview {
@@ -168,6 +140,7 @@ pub struct Browser {
     cached_entries: HashMap<PathBuf, CachedEntry>,
     watcher: RecommendedWatcher,
     watcher_rx: Receiver<notify::Result<Event>>,
+    cached_entry_kinds: Arc<RwLock<HashMap<PathBuf, EntryKind>>>,
     optimized_out_dirs: i32,
     optimized_out_files: i32,
 }
@@ -224,9 +197,27 @@ impl Browser {
             cached_entries: HashMap::new(),
             watcher,
             watcher_rx,
+            cached_entry_kinds: Arc::new(RwLock::new(HashMap::new())),
             optimized_out_dirs: 0,
             optimized_out_files: 0,
         }
+    }
+
+    fn entry_kind_of(path: impl AsRef<Path>, cached_entry_kinds: &Arc<RwLock<HashMap<PathBuf, EntryKind>>>) -> EntryKind {
+        let path = path.as_ref();
+        *cached_entry_kinds.write().unwrap().entry(path.to_path_buf()).or_insert_with(|| {
+            if path.is_dir() {
+                EntryKind::Directory
+            } else {
+                path.extension().and_then(|ext| ext.to_str()).map_or(EntryKind::File, |extension| {
+                    if AUDIO_EXTENSIONS.into_iter().any(|other| other.eq_ignore_ascii_case(extension)) {
+                        EntryKind::Audio
+                    } else {
+                        EntryKind::File
+                    }
+                })
+            }
+        })
     }
 
     // Animations
@@ -301,24 +292,18 @@ impl Browser {
         if widget_pos_y >= clip_max {
             return ui.allocate_response(vec2(0.0, 24.0), Sense::hover());
         }
-        let kind = EntryKind::from(&path);
+        let kind = Self::entry_kind_of(path, &self.cached_entry_kinds);
         if widget_pos_y + 24. <= clip_min {
             if kind != EntryKind::Directory {
                 self.optimized_out_files += 1;
-                return ui.allocate_response(vec2(0.0, 24.0), Sense::hover())
+                return ui.allocate_response(vec2(0.0, 24.0), Sense::hover());
             }
             let response: Option<Response> = {
-                let mut contains = false;
-                if let Some(_) = self
+                if self
                     .cached_entries
-                    .get(path)
-                    .and_then(|entry| match &entry.entries {
-                        Some(Ok(dir_entries)) => Some(dir_entries),
-                        _ => None
-                    }) {
-                        contains = true;
-                    }
-                if contains {
+                    .iter()
+                    .any(|(cached_path, cached_entry)| path == cached_path && matches!(cached_entry.entries, Some(Ok(_))))
+                {
                     None
                 } else {
                     self.optimized_out_dirs += 1;
@@ -459,6 +444,7 @@ impl Browser {
             }
             let (tx, rx) = channel();
             let read_dir = read_dir(path);
+            let cached_entry_kinds = Arc::clone(&self.cached_entry_kinds);
             spawn(move || {
                 tx.send(read_dir.and_then(|entries| {
                     entries
@@ -474,7 +460,10 @@ impl Browser {
                         .sorted_unstable_by(|a, b| {
                             let a = a.as_ref().ok();
                             let b = b.as_ref().ok();
-                            Ord::cmp(&(a.map(EntryKind::from), a), &(b.map(EntryKind::from), b))
+                            Ord::cmp(
+                                &(a.map(|path| Self::entry_kind_of(path, &cached_entry_kinds)), a),
+                                &(b.map(|path| Self::entry_kind_of(path, &cached_entry_kinds)), b),
+                            )
                         })
                         .try_collect()
                 }))
@@ -519,50 +508,51 @@ impl Browser {
 impl Widget for &mut Browser {
     fn ui(self, ui: &mut Ui) -> Response {
         ui.add_space(6.);
-        let resp = ui.vertical(|ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 16.;
-                ui.columns_const(|uis| {
-                    zip(Category::VARIANTS, uis.each_mut())
-                        .map(|(category, ui)| {
-                            let selected = self.selected_category == category;
-                            let string = category.to_string();
-                            let mut response = ui.add(Browser::button(&self.theme, selected, &string, self.other_category_hovered));
-                            if !selected {
-                                response = response.on_hover_cursor(CursorIcon::PointingHand);
-                                self.other_category_hovered = response.hovered();
-                            }
-                            if response.clicked() {
-                                self.selected_category = category;
-                            }
-                            response
-                        })
-                        .into_iter()
-                        .reduce(Response::bitor)
-                        .unwrap()
-                })
-            });
-            ui.add_space(4.);
-            ScrollArea::both()
-                .drag_to_scroll(false)
-                .auto_shrink(false)
-                .show_viewport(ui, |ui, _| {
-                    egui::Frame::default().show(ui, |ui| {
-                        ui.vertical(|ui| {
-                            match self.selected_category {
-                                Category::Files => self.add_files(ui),
-                                Category::Devices => {
-                                    // TODO: Show some devices here!
-                                    ui.label("Devices")
+        let resp = ui
+            .vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 16.;
+                    ui.columns_const(|uis| {
+                        zip(Category::VARIANTS, uis.each_mut())
+                            .map(|(category, ui)| {
+                                let selected = self.selected_category == category;
+                                let string = category.to_string();
+                                let mut response = ui.add(Browser::button(&self.theme, selected, &string, self.other_category_hovered));
+                                if !selected {
+                                    response = response.on_hover_cursor(CursorIcon::PointingHand);
+                                    self.other_category_hovered = response.hovered();
                                 }
-                            }
+                                if response.clicked() {
+                                    self.selected_category = category;
+                                }
+                                response
+                            })
+                            .into_iter()
+                            .reduce(Response::bitor)
+                            .unwrap()
+                    })
+                });
+                ui.add_space(4.);
+                ScrollArea::both()
+                    .drag_to_scroll(false)
+                    .auto_shrink(false)
+                    .show_viewport(ui, |ui, _| {
+                        egui::Frame::default().show(ui, |ui| {
+                            ui.vertical(|ui| {
+                                match self.selected_category {
+                                    Category::Files => self.add_files(ui),
+                                    Category::Devices => {
+                                        // TODO: Show some devices here!
+                                        ui.label("Devices")
+                                    }
+                                }
+                            })
                         })
                     })
-                })
-                .inner
-                .response
-        })
-        .inner;
+                    .inner
+                    .response
+            })
+            .inner;
         ui.painter().text(
             pos2(14., ui.max_rect().bottom() - 30.),
             egui::Align2::LEFT_CENTER,
