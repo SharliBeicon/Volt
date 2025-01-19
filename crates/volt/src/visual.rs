@@ -9,7 +9,7 @@ pub mod navbar;
 pub mod switch;
 
 // Theming
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ThemeColors {
     pub navbar_background_gradient_top: Color32,
     pub navbar_background_gradient_bottom: Color32,
@@ -23,6 +23,8 @@ pub struct ThemeColors {
     pub browser_invalid_name_bg: Color32,
     pub browser_unselected_hover_button_fg_invalid: Color32,
     pub browser_unselected_button_fg_invalid: Color32,
+    pub browser_folder_text: Color32,
+    pub browser_folder_hover_text: Color32,
     pub playlist_bar: Color32,
     pub playlist_beat: Color32,
     pub bg_text: Color32,
@@ -43,6 +45,8 @@ impl Default for ThemeColors {
             browser_invalid_name_bg: hex_color!("ff000010"),
             browser_unselected_button_fg_invalid: hex_color!("a46d88"),
             browser_unselected_hover_button_fg_invalid: hex_color!("f591b5"),
+            browser_folder_text: hex_color!("928ea7"),
+            browser_folder_hover_text: hex_color!("ece9ff"),
             playlist_bar: hex_color!("5e5a75"),
             playlist_beat: hex_color!("2e2b3f"),
             bg_text: hex_color!("646987"),

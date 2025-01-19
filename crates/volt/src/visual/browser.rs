@@ -1,3 +1,5 @@
+// TODO: Rewrite CollapsingHeader and a large part of the browser to be much more optimized. We should only ever call on entries we can actually see.
+
 use blerp::utils::zip;
 use itertools::Itertools;
 use notify::{recommended_watcher, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -7,6 +9,7 @@ use std::{
     borrow::Cow,
     cell::RefCell,
     collections::HashMap,
+    f32::consts::PI,
     fs::{read_dir, DirEntry, File},
     io::{self, BufReader},
     iter::Iterator,
@@ -15,17 +18,21 @@ use std::{
     rc::Rc,
     str::FromStr,
     string::ToString,
-    sync::mpsc::{channel, Receiver, Sender, TryRecvError},
+    sync::{
+        mpsc::{channel, Receiver, Sender, TryRecvError},
+        Arc, RwLock,
+    },
     thread::spawn,
     time::{Duration, Instant},
 };
 use strum::Display;
-use tap::Pipe;
+use tap::{Pipe, Tap};
 use tracing::{error, trace};
 
 use egui::{
-    emath::TSTransform, include_image, vec2, Button, CollapsingHeader, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, InnerResponse, LayerId, Margin, Order, Response, RichText, ScrollArea,
-    Sense, Separator, Ui, UiBuilder, Widget,
+    emath::{self, TSTransform},
+    include_image, remap, vec2, Button, CollapsingHeader, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, InnerResponse, LayerId, Margin, Order, Rect, Response, RichText, ScrollArea, Sense,
+    Separator, Shape, Stroke, Ui, UiBuilder, Widget,
 };
 
 use crate::visual::ThemeColors;
@@ -76,23 +83,6 @@ pub enum EntryKind {
     Directory,
     Audio,
     File,
-}
-
-impl<P: AsRef<Path>> From<P> for EntryKind {
-    fn from(value: P) -> Self {
-        if value.as_ref().is_dir() {
-            Self::Directory
-        } else if value
-            .as_ref()
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| AUDIO_EXTENSIONS.into_iter().any(|audio_extension| audio_extension.eq_ignore_ascii_case(extension)))
-        {
-            Self::Audio
-        } else {
-            Self::File
-        }
-    }
 }
 
 pub struct Preview {
@@ -148,10 +138,12 @@ pub struct Browser {
     open_paths: Rc<RefCell<Vec<PathBuf>>>,
     preview: Preview,
     hovered_entry: Option<PathBuf>,
-    theme: ThemeColors,
+    theme: Rc<ThemeColors>,
     cached_entries: HashMap<PathBuf, CachedEntry>,
     watcher: RecommendedWatcher,
     watcher_rx: Receiver<notify::Result<Event>>,
+    cached_entry_kinds: Arc<RwLock<HashMap<PathBuf, EntryKind>>>,
+    collapsing_headers: HashMap<PathBuf, bool>,
 }
 
 struct CachedEntry {
@@ -160,12 +152,13 @@ struct CachedEntry {
 }
 
 impl Browser {
-    pub fn new(themes: ThemeColors) -> Self {
+    pub fn new(theme: Rc<ThemeColors>) -> Self {
         let (watcher_tx, watcher_rx) = channel();
         let watcher = recommended_watcher(watcher_tx).unwrap();
         Self {
             selected_category: Category::Files,
             other_category_hovered: false,
+            collapsing_headers: HashMap::new(),
             open_paths: Rc::new(RefCell::new(vec![PathBuf::from_str("/").unwrap()])),
             preview: {
                 let (path_tx, path_rx) = channel::<PathBuf>();
@@ -202,13 +195,40 @@ impl Browser {
                 }
             },
             hovered_entry: None,
-            theme: themes,
+            theme,
             cached_entries: HashMap::new(),
             watcher,
             watcher_rx,
+            cached_entry_kinds: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
+    fn entry_kind_of(path: impl AsRef<Path>, cached_entry_kinds: &Arc<RwLock<HashMap<PathBuf, EntryKind>>>) -> EntryKind {
+        let path = path.as_ref();
+        *cached_entry_kinds.write().unwrap().entry(path.to_path_buf()).or_insert_with(|| {
+            if path.is_dir() {
+                EntryKind::Directory
+            } else {
+                path.extension().and_then(|ext| ext.to_str()).map_or(EntryKind::File, |extension| {
+                    if AUDIO_EXTENSIONS.into_iter().any(|other| other.eq_ignore_ascii_case(extension)) {
+                        EntryKind::Audio
+                    } else {
+                        EntryKind::File
+                    }
+                })
+            }
+        })
+    }
+
+    // Animations
+    fn loading(ui: &mut Ui) -> Response {
+        #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
+        let rotated = Image::new(include_image!("../images/icons/loading.png")).rotate(ui.input(|i| i.time * 6.0) as f32, vec2(0.5, 0.5));
+        ui.ctx().request_repaint();
+        ui.add_sized(vec2(16., 16.), rotated)
+    }
+
+    // Widgets
     pub fn button<'a>(theme: &'a ThemeColors, selected: bool, text: &'a str, hovered: bool) -> impl Widget + use<'a> {
         move |ui: &mut Ui| {
             let color = if selected {
@@ -228,89 +248,90 @@ impl Browser {
         }
     }
 
+    pub fn collapsing_header_icon(ui: &Ui, theme: &Rc<ThemeColors>, path: &Path, hovered_entry: Option<&Path>, openness: f32, response: &Response) {
+        let visuals = ui.style().interact(response);
+        let rect = Rect::from_center_size(response.rect.center(), response.rect.size() * 0.75).expand(visuals.expansion);
+        let mut points = vec![rect.left_top(), rect.right_top(), rect.center_bottom()];
+        let rotation = emath::Rot2::from_angle(remap(openness, 0. ..=1., -PI / 2. ..=0.));
+        for p in &mut points {
+            *p = rect.center() + rotation * (*p - rect.center());
+        }
+
+        ui.painter().add(Shape::convex_polygon(
+            points,
+            if Some(path) == hovered_entry {
+                theme.browser_folder_hover_text
+            } else {
+                theme.browser_folder_text
+            },
+            Stroke::NONE,
+        ));
+    }
+
     fn add_files(&mut self, ui: &mut Ui) -> Response {
         self.handle_file_or_folder_drop(ui.ctx());
         egui::Frame::default()
             .inner_margin(Margin::same(8.))
             .show(ui, |ui| {
-                ui.vertical(|ui| Rc::clone(&self.open_paths).borrow().iter().map(|path| self.add_entry(path, ui)).reduce(Response::bitor))
+                ui.vertical(|ui| {
+                    for path in Rc::clone(&self.open_paths).borrow().iter() {
+                        self.add_entry(path, ui);
+                    }
+                })
             })
             .response
     }
 
     fn add_entry(&mut self, path: &Path, ui: &mut Ui) -> Response {
-        let widget_pos_y = ui.next_widget_position().y;
-        let clip_max = ui.clip_rect().max.y;
-        let clip_min = ui.clip_rect().min.y;
-
-        if widget_pos_y >= clip_max {
-            ui.add_space(24.0);
-            return ui.allocate_response(vec2(0.0, 24.0), Sense::hover());
+        const ENTRY_HEIGHT: f32 = 20.;
+        let next_top = ui.next_widget_position().y;
+        let next_bottom = next_top + ENTRY_HEIGHT;
+        let kind = Self::entry_kind_of(path, &self.cached_entry_kinds);
+        if next_top >= ui.clip_rect().bottom() || next_bottom <= ui.clip_rect().top() && kind != EntryKind::Directory {
+            return ui.allocate_response(vec2(0.0, ENTRY_HEIGHT), Sense::hover());
         }
-        // fix this later
-        // if widget_pos_y + 24. + 100. <= clip_min {
-        //     println!("{:?}", path);
-        // }
-        let kind = EntryKind::from(path);
         let name = path.file_name().map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
-        let button = |hovered_entry: &Option<PathBuf>| {
+        let button = |hovered_entry: &Option<PathBuf>, theme: &Rc<ThemeColors>| {
             Button::new(RichText::new(&*name).color(match (Some(path) == hovered_entry.as_deref(), matches!(&name, &Cow::Owned(_))) {
-                (true, true) => self.theme.browser_unselected_hover_button_fg_invalid,
-                (true, false) => self.theme.browser_unselected_hover_button_fg,
-                (false, true) => self.theme.browser_unselected_button_fg_invalid,
-                (false, false) => self.theme.browser_unselected_button_fg,
+                (true, true) => theme.browser_unselected_hover_button_fg_invalid,
+                (true, false) => theme.browser_unselected_hover_button_fg,
+                (false, true) => theme.browser_unselected_button_fg_invalid,
+                (false, false) => theme.browser_unselected_button_fg,
             }))
             .frame(false)
         };
-        let response = match kind {
-            EntryKind::Audio => {
-                let mut add_contents = |ui: &mut Ui| {
-                    ui.horizontal(|ui| {
-                        ui.add(Image::new(include_image!("../images/icons/audio.png")))
-                            .union(ui.add(button(&self.hovered_entry)))
-                            .pipe(|response| {
-                                let data = self.preview.data();
-                                if let Some(data @ PreviewData { length: Some(length), .. }) = self.preview.path.as_ref().filter(|preview_path| preview_path == &path).zip(data).map(|(_, data)| data) {
-                                    ui.ctx().request_repaint();
-                                    response.union(ui.label(format!(
-                                        "{:>02}:{:>02} of {:>02}:{:>02}",
-                                        data.progress().as_secs() / 60,
-                                        data.progress().as_secs() % 60,
-                                        length.as_secs() / 60,
-                                        length.as_secs() % 60
-                                    )))
-                                } else {
-                                    response
-                                }
-                            })
-                    })
-                };
-                let mut response = if ui.ctx().is_being_dragged(Id::new(path)) {
-                    DragAndDrop::set_payload(ui.ctx(), path.to_path_buf());
-                    let layer_id = LayerId::new(Order::Tooltip, Id::new(path));
-                    let response = ui.scope_builder(UiBuilder::new().layer_id(layer_id), add_contents).response;
-                    if let Some(pointer_pos) = ui.ctx().pointer_interact_pos() {
-                        let delta = pointer_pos - response.rect.center();
-                        ui.ctx().transform_layer_shapes(layer_id, TSTransform::from_translation(delta));
+        let response = ui
+            .allocate_ui(vec2(0., ENTRY_HEIGHT), |ui| {
+                let response = match kind {
+                    EntryKind::Audio => self.add_audio_entry(path, ui, button),
+                    EntryKind::File => Self::add_file(ui, button(&self.hovered_entry, &self.theme)),
+                    EntryKind::Directory => {
+                        let response = CollapsingHeader::new(RichText::new(name.clone()).color(if Some(path) == self.hovered_entry.as_deref() {
+                            self.theme.browser_folder_hover_text
+                        } else {
+                            self.theme.browser_folder_text
+                        }))
+                        .id_salt(path)
+                        .icon({
+                            let theme = Rc::clone(&self.theme);
+                            let hovered_entry = self.hovered_entry.clone();
+                            let path = path.to_path_buf();
+                            move |ui, openness, response| {
+                                Self::collapsing_header_icon(ui, &theme, &path, hovered_entry.as_deref(), openness, response);
+                            }
+                        })
+                        .show(ui, |ui| {
+                            self.add_directory_contents(path, ui);
+                        });
+                        self.collapsing_headers.insert(path.to_path_buf(), response.body_response.is_some());
+                        response.header_response
                     }
-                    response
-                } else {
-                    let response = ui.scope(&mut add_contents).response;
-                    let dnd_response = ui.interact(response.rect, Id::new(path), Sense::click_and_drag()).on_hover_cursor(CursorIcon::Grab);
-                    dnd_response | response
                 };
-                response.layer_id = ui.layer_id();
+                ui.allocate_space(ui.available_size());
                 response
-            }
-            EntryKind::File => Self::add_file(ui, button(&self.hovered_entry)),
-            EntryKind::Directory => {
-                let response = CollapsingHeader::new(name).id_salt(path).show(ui, |ui| {
-                    self.add_directory_contents(path, ui);
-                });
-                response.header_response
-            }
-        };
-        let response = response.on_hover_cursor(CursorIcon::PointingHand);
+            })
+            .response
+            .on_hover_cursor(CursorIcon::PointingHand);
         if response.clicked() {
             match kind {
                 EntryKind::Audio => {
@@ -326,7 +347,53 @@ impl Browser {
         }
         if response.hovered() {
             self.hovered_entry = Some(path.to_path_buf());
+        } else {
+            let mut path_buf = PathBuf::new();
+            path_buf.push(Path::new(""));
+            if self.hovered_entry.as_ref().unwrap_or(&path_buf).to_str().unwrap_or_default() == path.to_path_buf().to_str().unwrap_or_default() {
+                self.hovered_entry = None;
+            }
         }
+        response
+    }
+
+    fn add_audio_entry(&mut self, path: &Path, ui: &mut Ui, button: impl Fn(&Option<PathBuf>, &Rc<ThemeColors>) -> Button<'static>) -> Response {
+        let mut add_contents = |ui: &mut Ui| {
+            ui.horizontal(|ui| {
+                ui.add(Image::new(include_image!("../images/icons/audio.png")))
+                    .union(ui.add(button(&self.hovered_entry, &self.theme)))
+                    .pipe(|response| {
+                        let data = self.preview.data();
+                        if let Some(data @ PreviewData { length: Some(length), .. }) = self.preview.path.as_ref().filter(|preview_path| *preview_path == path).zip(data).map(|(_, data)| data) {
+                            ui.ctx().request_repaint();
+                            response.union(ui.label(format!(
+                                "{:>02}:{:>02} of {:>02}:{:>02}",
+                                data.progress().as_secs() / 60,
+                                data.progress().as_secs() % 60,
+                                length.as_secs() / 60,
+                                length.as_secs() % 60
+                            )))
+                        } else {
+                            response
+                        }
+                    })
+            })
+        };
+        let mut response = if ui.ctx().is_being_dragged(Id::new(path.to_owned())) {
+            DragAndDrop::set_payload(ui.ctx(), path.to_path_buf());
+            let layer_id = LayerId::new(Order::Tooltip, Id::new(path.to_owned()));
+            let response = ui.scope_builder(UiBuilder::new().layer_id(layer_id), add_contents).response;
+            if let Some(pointer_pos) = ui.ctx().pointer_interact_pos() {
+                let delta = pointer_pos - response.rect.center();
+                ui.ctx().transform_layer_shapes(layer_id, TSTransform::from_translation(delta));
+            }
+            response
+        } else {
+            let response = ui.scope(&mut add_contents).response;
+            let dnd_response = ui.interact(response.rect, Id::new(path.to_owned()), Sense::click_and_drag()).on_hover_cursor(CursorIcon::Grab);
+            dnd_response | response
+        };
+        response.layer_id = ui.layer_id();
         response
     }
 
@@ -355,6 +422,7 @@ impl Browser {
             }
             let (tx, rx) = channel();
             let read_dir = read_dir(path);
+            let cached_entry_kinds = Arc::clone(&self.cached_entry_kinds);
             spawn(move || {
                 tx.send(read_dir.and_then(|entries| {
                     entries
@@ -370,7 +438,10 @@ impl Browser {
                         .sorted_unstable_by(|a, b| {
                             let a = a.as_ref().ok();
                             let b = b.as_ref().ok();
-                            Ord::cmp(&(a.map(EntryKind::from), a), &(b.map(EntryKind::from), b))
+                            Ord::cmp(
+                                &(a.map(|path| Self::entry_kind_of(path, &cached_entry_kinds)), a),
+                                &(b.map(|path| Self::entry_kind_of(path, &cached_entry_kinds)), b),
+                            )
                         })
                         .try_collect()
                 }))
@@ -386,22 +457,14 @@ impl Browser {
             None => match rx.try_recv() {
                 Ok(Ok(recv_entries)) => {
                     *entries = Some(Ok(recv_entries.into()));
-                    #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
-                    let rotated = Image::new(include_image!("../images/icons/loading.png")).rotate(ui.input(|i| i.time * 6.0) as f32, vec2(0.5, 0.5));
-                    ui.ctx().request_repaint();
-                    Some(ui.add_sized(vec2(16., 16.), rotated))
+                    Some(Self::loading(ui))
                 }
                 Ok(Err(error)) => {
                     *entries = Some(Err(error));
                     None
                 }
                 Err(TryRecvError::Disconnected) => None,
-                Err(TryRecvError::Empty) => {
-                    #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
-                    let rotated = Image::new(include_image!("../images/icons/loading.png")).rotate(ui.input(|i| i.time * 6.0) as f32, vec2(0.5, 0.5));
-                    ui.ctx().request_repaint();
-                    Some(ui.add_sized(vec2(16., 16.), rotated))
-                }
+                Err(TryRecvError::Empty) => Some(Self::loading(ui)),
             },
         }
     }
@@ -422,48 +485,52 @@ impl Browser {
 
 impl Widget for &mut Browser {
     fn ui(self, ui: &mut Ui) -> Response {
-        ScrollArea::both()
-            .drag_to_scroll(false)
-            .auto_shrink(false)
-            .show_viewport(ui, |ui, _| {
-                egui::Frame::default().inner_margin(Margin::same(8.)).show(ui, |ui| {
-                    ui.vertical(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 16.;
-                            ui.columns_const(|uis| {
-                                zip(Category::VARIANTS, uis.each_mut())
-                                    .map(|(category, ui)| {
-                                        let selected = self.selected_category == category;
-                                        let string = category.to_string();
-                                        let mut response = ui.add(Browser::button(&self.theme, selected, &string, self.other_category_hovered));
-                                        if !selected {
-                                            response = response.on_hover_cursor(CursorIcon::PointingHand);
-                                            self.other_category_hovered = response.hovered();
-                                        }
-                                        if response.clicked() {
-                                            self.selected_category = category;
-                                        }
-                                        response
-                                    })
-                                    .into_iter()
-                                    .reduce(Response::bitor)
-                                    .unwrap()
-                            })
+        ui.add_space(6.);
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 16.;
+                ui.columns_const(|uis| {
+                    zip(Category::VARIANTS, uis.each_mut())
+                        .map(|(category, ui)| {
+                            let selected = self.selected_category == category;
+                            let string = category.to_string();
+                            let mut response = ui.add(Browser::button(&self.theme, selected, &string, self.other_category_hovered));
+                            if !selected {
+                                response = response.on_hover_cursor(CursorIcon::PointingHand);
+                                self.other_category_hovered = response.hovered();
+                            }
+                            if response.clicked() {
+                                self.selected_category = category;
+                            }
+                            response
                         })
-                        .response
-                        .union(match self.selected_category {
-                            Category::Files => self.add_files(ui),
-                            Category::Devices => {
-                                // TODO: Show some devices here!
-                                ui.label("Devices")
+                        .into_iter()
+                        .reduce(Response::bitor)
+                        .unwrap()
+                })
+            });
+            ui.add_space(4.);
+            ScrollArea::both()
+                .drag_to_scroll(false)
+                .auto_shrink(false)
+                .show_viewport(ui, |ui, _| {
+                    egui::Frame::default().show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            match self.selected_category {
+                                Category::Files => self.add_files(ui),
+                                Category::Devices => {
+                                    // TODO: Show some devices here!
+                                    ui.label("Devices")
+                                }
                             }
                         })
                     })
                 })
-            })
-            .inner
-            .response
+                .inner
+                .response
+        })
+        .inner
     }
 }
 
-const AUDIO_EXTENSIONS: [&str; 6] = ["wav", "wave", "mp3", "ogg", "flac", "opus"];
+const AUDIO_EXTENSIONS: [&str; 6] = ["flac", "mp3", "ogg", "opus", "wav", "wave"];

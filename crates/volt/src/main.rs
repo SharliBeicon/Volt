@@ -1,5 +1,8 @@
 #![warn(clippy::pedantic, clippy::nursery, clippy::allow_attributes_without_reason, clippy::undocumented_unsafe_blocks, clippy::clone_on_ref_ptr)]
-use std::io::{BufReader, Cursor};
+use std::{
+    io::{BufReader, Cursor},
+    rc::Rc,
+};
 
 use eframe::{egui, run_native, App, CreationContext, NativeOptions};
 use egui::{CentralPanel, Context, FontData, FontDefinitions, FontFamily, FontId, IconData, SidePanel, TextStyle, TopBottomPanel, ViewportBuilder};
@@ -47,7 +50,7 @@ fn main() -> eframe::Result {
 struct VoltApp {
     pub browser: Browser,
     pub central: Central,
-    pub themes: ThemeColors,
+    pub theme: Rc<ThemeColors>,
 }
 
 impl VoltApp {
@@ -76,11 +79,11 @@ impl VoltApp {
             .map(|(text_style, size)| (text_style, FontId::new(size, FontFamily::Proportional)))
             .into();
         });
-        let themes = ThemeColors::default();
+        let theme = Rc::new(ThemeColors::default());
         Self {
-            browser: Browser::new(themes),
+            browser: Browser::new(Rc::clone(&theme)),
             central: Central::new(),
-            themes,
+            theme,
         }
     }
 }
@@ -88,12 +91,12 @@ impl VoltApp {
 impl App for VoltApp {
     fn update(&mut self, ctx: &Context, _: &mut eframe::Frame) {
         TopBottomPanel::top("navbar").frame(egui::Frame::default()).show(ctx, |ui| {
-            ui.add(navbar(&self.themes));
+            ui.add(navbar(&self.theme));
         });
-        SidePanel::left("browser").default_width(300.).frame(egui::Frame::default().fill(self.themes.browser)).show(ctx, |ui| {
+        SidePanel::left("browser").default_width(300.).frame(egui::Frame::default().fill(self.theme.browser)).show(ctx, |ui| {
             ui.add(&mut self.browser);
         });
-        CentralPanel::default().frame(egui::Frame::default().fill(self.themes.central_background)).show(ctx, |ui| {
+        CentralPanel::default().frame(egui::Frame::default().fill(self.theme.central_background)).show(ctx, |ui| {
             ui.add(&mut self.central);
         });
     }
