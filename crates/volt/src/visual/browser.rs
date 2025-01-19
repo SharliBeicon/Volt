@@ -1,3 +1,5 @@
+// TODO: Rewrite CollapsingHeader and a large part of the browser to be much more optimized. We should only ever call on entries we can actually see.
+
 use blerp::utils::zip;
 use itertools::Itertools;
 use notify::{recommended_watcher, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -141,6 +143,7 @@ pub struct Browser {
     watcher: RecommendedWatcher,
     watcher_rx: Receiver<notify::Result<Event>>,
     cached_entry_kinds: Arc<RwLock<HashMap<PathBuf, EntryKind>>>,
+    collapsing_headers: HashMap<PathBuf, bool>,
 }
 
 struct CachedEntry {
@@ -155,6 +158,7 @@ impl Browser {
         Self {
             selected_category: Category::Files,
             other_category_hovered: false,
+            collapsing_headers: HashMap::new(),
             open_paths: Rc::new(RefCell::new(vec![PathBuf::from_str("/").unwrap()])),
             preview: {
                 let (path_tx, path_rx) = channel::<PathBuf>();
@@ -319,6 +323,7 @@ impl Browser {
                         .show(ui, |ui| {
                             self.add_directory_contents(path, ui);
                         });
+                        self.collapsing_headers.insert(path.to_path_buf(), response.body_response.is_some());
                         response.header_response
                     }
                 };
