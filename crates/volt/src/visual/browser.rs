@@ -1,6 +1,8 @@
 use blerp::utils::zip;
+use dashmap::DashMap;
 use itertools::Itertools;
 use notify::{recommended_watcher, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use once_cell::sync::Lazy;
 use open::that_detached;
 use rodio::{Decoder, OutputStream, Sink, Source};
 use std::{
@@ -16,7 +18,7 @@ use std::{
     rc::Rc,
     str::FromStr,
     string::ToString,
-    sync::mpsc::{channel, Receiver, Sender, TryRecvError},
+    sync::{mpsc::{channel, Receiver, Sender, TryRecvError}, RwLock},
     thread::spawn,
     time::{Duration, Instant},
 };
@@ -25,9 +27,7 @@ use tap::Pipe;
 use tracing::{error, trace};
 
 use egui::{
-    emath::{self, TSTransform},
-    include_image, remap, vec2, Button, CollapsingHeader, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, InnerResponse, LayerId, Margin, Order, Rect, Response, RichText, ScrollArea, Sense,
-    Separator, Shape, Stroke, Ui, UiBuilder, Widget,
+    emath::{self, TSTransform}, include_image, pos2, remap, scroll_area::ScrollBarVisibility, vec2, Button, CollapsingHeader, Color32, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, InnerResponse, LayerId, Margin, Order, Rect, Response, RichText, ScrollArea, Sense, Separator, Shape, Stroke, Ui, UiBuilder, Vec2, Vec2b, Widget
 };
 
 use crate::visual::ThemeColors;
@@ -80,20 +80,34 @@ pub enum EntryKind {
     File,
 }
 
+static ENTRY_KIND_CACHE: Lazy<DashMap<PathBuf, EntryKind>> =
+    Lazy::new(|| DashMap::with_capacity(1000));
+
 impl<P: AsRef<Path>> From<P> for EntryKind {
     fn from(value: P) -> Self {
-        if value.as_ref().is_dir() {
-            Self::Directory
-        } else if value
-            .as_ref()
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| AUDIO_EXTENSIONS.into_iter().any(|audio_extension| audio_extension.eq_ignore_ascii_case(extension)))
-        {
-            Self::Audio
-        } else {
-            Self::File
+        let path = value.as_ref();
+
+        if let Some(entry) = ENTRY_KIND_CACHE.get(path) {
+            return *entry;
         }
+
+        let kind = if path.is_dir() {
+            Self::Directory
+        } else {
+            match path.extension().and_then(|ext| ext.to_str()) {
+                Some(ext) => {
+                    if AUDIO_EXTENSIONS.binary_search(&ext.to_ascii_lowercase().as_str()).is_ok() {
+                        Self::Audio
+                    } else {
+                        Self::File
+                    }
+                }
+                None => Self::File
+            }
+        };
+
+        ENTRY_KIND_CACHE.insert(path.to_path_buf(), kind);
+        kind
     }
 }
 
@@ -154,6 +168,8 @@ pub struct Browser {
     cached_entries: HashMap<PathBuf, CachedEntry>,
     watcher: RecommendedWatcher,
     watcher_rx: Receiver<notify::Result<Event>>,
+    optimized_out_dirs: i32,
+    optimized_out_files: i32,
 }
 
 struct CachedEntry {
@@ -208,6 +224,8 @@ impl Browser {
             cached_entries: HashMap::new(),
             watcher,
             watcher_rx,
+            optimized_out_dirs: 0,
+            optimized_out_files: 0,
         }
     }
 
@@ -264,26 +282,54 @@ impl Browser {
         egui::Frame::default()
             .inner_margin(Margin::same(8.))
             .show(ui, |ui| {
-                ui.vertical(|ui| Rc::clone(&self.open_paths).borrow().iter().map(|path| self.add_entry(path, ui)).reduce(Response::bitor))
+                ui.vertical(|ui| {
+                    let borrowed_rc = Rc::clone(&self.open_paths);
+                    let borrowed = borrowed_rc.borrow();
+                    for path in borrowed.iter() {
+                        self.add_entry(path, ui);
+                    }
+                })
             })
             .response
     }
 
     fn add_entry(&mut self, path: &Path, ui: &mut Ui) -> Response {
         let widget_pos_y = ui.next_widget_position().y;
-        let clip_max = ui.clip_rect().max.y;
-        let clip_min = ui.clip_rect().min.y;
+        let clip_max = ui.clip_rect().max.y + 48.;
+        let clip_min = ui.clip_rect().min.y - 48.;
 
         if widget_pos_y >= clip_max {
-            ui.add_space(24.0);
             return ui.allocate_response(vec2(0.0, 24.0), Sense::hover());
         }
-        // fix this later
-        // if widget_pos_y + 24. + 100. <= clip_min {
-        //     println!("{:?}", path);
-        // }
-
         let kind = EntryKind::from(&path);
+        if widget_pos_y + 24. <= clip_min {
+            if kind != EntryKind::Directory {
+                self.optimized_out_files += 1;
+                return ui.allocate_response(vec2(0.0, 24.0), Sense::hover())
+            }
+            let response: Option<Response> = {
+                let mut contains = false;
+                if let Some(_) = self
+                    .cached_entries
+                    .get(path)
+                    .and_then(|entry| match &entry.entries {
+                        Some(Ok(dir_entries)) => Some(dir_entries),
+                        _ => None
+                    }) {
+                        contains = true;
+                    }
+                if contains {
+                    None
+                } else {
+                    self.optimized_out_dirs += 1;
+                    Some(ui.allocate_response(vec2(0.0, 24.0), Sense::hover()))
+                }
+            };
+            if let Some(response) = response {
+                return response;
+            }
+        }
+
         let name = path.file_name().map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
 
         let button = |hovered_entry: &Option<PathBuf>, theme: &Rc<ThemeColors>| {
@@ -472,48 +518,62 @@ impl Browser {
 
 impl Widget for &mut Browser {
     fn ui(self, ui: &mut Ui) -> Response {
-        ScrollArea::both()
-            .drag_to_scroll(false)
-            .auto_shrink(false)
-            .show_viewport(ui, |ui, _| {
-                egui::Frame::default().inner_margin(Margin::same(8.)).show(ui, |ui| {
-                    ui.vertical(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 16.;
-                            ui.columns_const(|uis| {
-                                zip(Category::VARIANTS, uis.each_mut())
-                                    .map(|(category, ui)| {
-                                        let selected = self.selected_category == category;
-                                        let string = category.to_string();
-                                        let mut response = ui.add(Browser::button(&self.theme, selected, &string, self.other_category_hovered));
-                                        if !selected {
-                                            response = response.on_hover_cursor(CursorIcon::PointingHand);
-                                            self.other_category_hovered = response.hovered();
-                                        }
-                                        if response.clicked() {
-                                            self.selected_category = category;
-                                        }
-                                        response
-                                    })
-                                    .into_iter()
-                                    .reduce(Response::bitor)
-                                    .unwrap()
-                            })
+        ui.add_space(6.);
+        let resp = ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 16.;
+                ui.columns_const(|uis| {
+                    zip(Category::VARIANTS, uis.each_mut())
+                        .map(|(category, ui)| {
+                            let selected = self.selected_category == category;
+                            let string = category.to_string();
+                            let mut response = ui.add(Browser::button(&self.theme, selected, &string, self.other_category_hovered));
+                            if !selected {
+                                response = response.on_hover_cursor(CursorIcon::PointingHand);
+                                self.other_category_hovered = response.hovered();
+                            }
+                            if response.clicked() {
+                                self.selected_category = category;
+                            }
+                            response
                         })
-                        .response
-                        .union(match self.selected_category {
-                            Category::Files => self.add_files(ui),
-                            Category::Devices => {
-                                // TODO: Show some devices here!
-                                ui.label("Devices")
+                        .into_iter()
+                        .reduce(Response::bitor)
+                        .unwrap()
+                })
+            });
+            ui.add_space(4.);
+            ScrollArea::both()
+                .drag_to_scroll(false)
+                .auto_shrink(false)
+                .show_viewport(ui, |ui, _| {
+                    egui::Frame::default().show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            match self.selected_category {
+                                Category::Files => self.add_files(ui),
+                                Category::Devices => {
+                                    // TODO: Show some devices here!
+                                    ui.label("Devices")
+                                }
                             }
                         })
                     })
                 })
-            })
-            .inner
-            .response
+                .inner
+                .response
+        })
+        .inner;
+        ui.painter().text(
+            pos2(14., ui.max_rect().bottom() - 30.),
+            egui::Align2::LEFT_CENTER,
+            format!("Optimized out: {} dirs, {} files", self.optimized_out_dirs, self.optimized_out_files),
+            egui::FontId::proportional(12.),
+            self.theme.browser_unselected_button_fg_invalid,
+        );
+        self.optimized_out_files = 0;
+        self.optimized_out_dirs = 0;
+        resp
     }
 }
 
-const AUDIO_EXTENSIONS: [&str; 6] = ["wav", "wave", "mp3", "ogg", "flac", "opus"];
+const AUDIO_EXTENSIONS: [&str; 6] = ["flac", "mp3", "ogg", "opus", "wav", "wave"];
