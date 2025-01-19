@@ -29,8 +29,8 @@ use tracing::{error, trace};
 
 use egui::{
     emath::{self, TSTransform},
-    include_image, pos2, remap, vec2, Button, CollapsingHeader, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, InnerResponse, LayerId, Margin, Order, Rect, Response, RichText, ScrollArea,
-    Sense, Separator, Shape, Stroke, Ui, UiBuilder, Widget,
+    include_image, remap, vec2, Button, CollapsingHeader, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, InnerResponse, LayerId, Margin, Order, Rect, Response, RichText, ScrollArea, Sense,
+    Separator, Shape, Stroke, Ui, UiBuilder, Widget,
 };
 
 use crate::visual::ThemeColors;
@@ -141,8 +141,6 @@ pub struct Browser {
     watcher: RecommendedWatcher,
     watcher_rx: Receiver<notify::Result<Event>>,
     cached_entry_kinds: Arc<RwLock<HashMap<PathBuf, EntryKind>>>,
-    optimized_out_dirs: i32,
-    optimized_out_files: i32,
 }
 
 struct CachedEntry {
@@ -198,8 +196,6 @@ impl Browser {
             watcher,
             watcher_rx,
             cached_entry_kinds: Arc::new(RwLock::new(HashMap::new())),
-            optimized_out_dirs: 0,
-            optimized_out_files: 0,
         }
     }
 
@@ -274,9 +270,7 @@ impl Browser {
             .inner_margin(Margin::same(8.))
             .show(ui, |ui| {
                 ui.vertical(|ui| {
-                    let borrowed_rc = Rc::clone(&self.open_paths);
-                    let borrowed = borrowed_rc.borrow();
-                    for path in borrowed.iter() {
+                    for path in Rc::clone(&self.open_paths).borrow().iter() {
                         self.add_entry(path, ui);
                     }
                 })
@@ -286,33 +280,21 @@ impl Browser {
 
     fn add_entry(&mut self, path: &Path, ui: &mut Ui) -> Response {
         let widget_pos_y = ui.next_widget_position().y;
-        let clip_max = ui.clip_rect().max.y + 48.;
-        let clip_min = ui.clip_rect().min.y - 48.;
+        let clip_max = ui.clip_rect().bottom() + 48.;
+        let clip_min = ui.clip_rect().top() - 48.;
 
         if widget_pos_y >= clip_max {
             return ui.allocate_response(vec2(0.0, 24.0), Sense::hover());
         }
         let kind = Self::entry_kind_of(path, &self.cached_entry_kinds);
-        if widget_pos_y + 24. <= clip_min {
-            if kind != EntryKind::Directory {
-                self.optimized_out_files += 1;
-                return ui.allocate_response(vec2(0.0, 24.0), Sense::hover());
-            }
-            let response: Option<Response> = {
-                if self
+        if widget_pos_y + 24. <= clip_min
+            && (kind != EntryKind::Directory
+                || self
                     .cached_entries
                     .iter()
-                    .any(|(cached_path, cached_entry)| path == cached_path && matches!(cached_entry.entries, Some(Ok(_))))
-                {
-                    None
-                } else {
-                    self.optimized_out_dirs += 1;
-                    Some(ui.allocate_response(vec2(0.0, 24.0), Sense::hover()))
-                }
-            };
-            if let Some(response) = response {
-                return response;
-            }
+                    .all(|(cached_path, cached_entry)| path != cached_path || !matches!(cached_entry.entries, Some(Ok(_)))))
+        {
+            return ui.allocate_response(vec2(0.0, 24.0), Sense::hover());
         }
 
         let name = path.file_name().map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
@@ -370,9 +352,9 @@ impl Browser {
         if response.hovered() {
             self.hovered_entry = Some(path.to_path_buf());
         } else {
-            let mut pbuf = PathBuf::new();
-            pbuf.push(Path::new(""));
-            if self.hovered_entry.as_ref().unwrap_or(&pbuf).to_str().unwrap_or_default() == path.to_path_buf().to_str().unwrap_or_default() {
+            let mut path_buf = PathBuf::new();
+            path_buf.push(Path::new(""));
+            if self.hovered_entry.as_ref().unwrap_or(&path_buf).to_str().unwrap_or_default() == path.to_path_buf().to_str().unwrap_or_default() {
                 self.hovered_entry = None;
             }
         }
@@ -508,61 +490,50 @@ impl Browser {
 impl Widget for &mut Browser {
     fn ui(self, ui: &mut Ui) -> Response {
         ui.add_space(6.);
-        let resp = ui
-            .vertical(|ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 16.;
-                    ui.columns_const(|uis| {
-                        zip(Category::VARIANTS, uis.each_mut())
-                            .map(|(category, ui)| {
-                                let selected = self.selected_category == category;
-                                let string = category.to_string();
-                                let mut response = ui.add(Browser::button(&self.theme, selected, &string, self.other_category_hovered));
-                                if !selected {
-                                    response = response.on_hover_cursor(CursorIcon::PointingHand);
-                                    self.other_category_hovered = response.hovered();
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 16.;
+                ui.columns_const(|uis| {
+                    zip(Category::VARIANTS, uis.each_mut())
+                        .map(|(category, ui)| {
+                            let selected = self.selected_category == category;
+                            let string = category.to_string();
+                            let mut response = ui.add(Browser::button(&self.theme, selected, &string, self.other_category_hovered));
+                            if !selected {
+                                response = response.on_hover_cursor(CursorIcon::PointingHand);
+                                self.other_category_hovered = response.hovered();
+                            }
+                            if response.clicked() {
+                                self.selected_category = category;
+                            }
+                            response
+                        })
+                        .into_iter()
+                        .reduce(Response::bitor)
+                        .unwrap()
+                })
+            });
+            ui.add_space(4.);
+            ScrollArea::both()
+                .drag_to_scroll(false)
+                .auto_shrink(false)
+                .show_viewport(ui, |ui, _| {
+                    egui::Frame::default().show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            match self.selected_category {
+                                Category::Files => self.add_files(ui),
+                                Category::Devices => {
+                                    // TODO: Show some devices here!
+                                    ui.label("Devices")
                                 }
-                                if response.clicked() {
-                                    self.selected_category = category;
-                                }
-                                response
-                            })
-                            .into_iter()
-                            .reduce(Response::bitor)
-                            .unwrap()
-                    })
-                });
-                ui.add_space(4.);
-                ScrollArea::both()
-                    .drag_to_scroll(false)
-                    .auto_shrink(false)
-                    .show_viewport(ui, |ui, _| {
-                        egui::Frame::default().show(ui, |ui| {
-                            ui.vertical(|ui| {
-                                match self.selected_category {
-                                    Category::Files => self.add_files(ui),
-                                    Category::Devices => {
-                                        // TODO: Show some devices here!
-                                        ui.label("Devices")
-                                    }
-                                }
-                            })
+                            }
                         })
                     })
-                    .inner
-                    .response
-            })
-            .inner;
-        ui.painter().text(
-            pos2(14., ui.max_rect().bottom() - 30.),
-            egui::Align2::LEFT_CENTER,
-            format!("Optimized out: {} dirs, {} files", self.optimized_out_dirs, self.optimized_out_files),
-            egui::FontId::proportional(12.),
-            self.theme.browser_unselected_button_fg_invalid,
-        );
-        self.optimized_out_files = 0;
-        self.optimized_out_dirs = 0;
-        resp
+                })
+                .inner
+                .response
+        })
+        .inner
     }
 }
 
