@@ -203,6 +203,7 @@ impl Browser {
         }
     }
 
+    // TODO: Implement EntryKind cache invalidation.
     fn entry_kind_of(path: impl AsRef<Path>, cached_entry_kinds: &Arc<RwLock<HashMap<PathBuf, EntryKind>>>) -> EntryKind {
         let path = path.as_ref();
         *cached_entry_kinds.write().unwrap().entry(path.to_path_buf()).or_insert_with(|| {
