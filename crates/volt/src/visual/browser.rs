@@ -24,7 +24,7 @@ use std::{
     time::{Duration, Instant},
 };
 use strum::Display;
-use tap::Pipe;
+use tap::{Pipe, Tap};
 use tracing::{error, trace};
 
 use egui::{
@@ -279,26 +279,14 @@ impl Browser {
     }
 
     fn add_entry(&mut self, path: &Path, ui: &mut Ui) -> Response {
-        let widget_pos_y = ui.next_widget_position().y;
-        let clip_max = ui.clip_rect().bottom() + 48.;
-        let clip_min = ui.clip_rect().top() - 48.;
-
-        if widget_pos_y >= clip_max {
-            return ui.allocate_response(vec2(0.0, 24.0), Sense::hover());
-        }
+        const ENTRY_HEIGHT: f32 = 20.;
+        let next_top = ui.next_widget_position().y;
+        let next_bottom = next_top + ENTRY_HEIGHT;
         let kind = Self::entry_kind_of(path, &self.cached_entry_kinds);
-        if widget_pos_y + 24. <= clip_min
-            && (kind != EntryKind::Directory
-                || self
-                    .cached_entries
-                    .iter()
-                    .all(|(cached_path, cached_entry)| path != cached_path || !matches!(cached_entry.entries, Some(Ok(_)))))
-        {
-            return ui.allocate_response(vec2(0.0, 24.0), Sense::hover());
+        if next_top >= ui.clip_rect().bottom() || next_bottom <= ui.clip_rect().top() && kind != EntryKind::Directory {
+            return ui.allocate_response(vec2(0.0, ENTRY_HEIGHT), Sense::hover());
         }
-
         let name = path.file_name().map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
-
         let button = |hovered_entry: &Option<PathBuf>, theme: &Rc<ThemeColors>| {
             Button::new(RichText::new(&*name).color(match (Some(path) == hovered_entry.as_deref(), matches!(&name, &Cow::Owned(_))) {
                 (true, true) => theme.browser_unselected_hover_button_fg_invalid,
@@ -308,33 +296,37 @@ impl Browser {
             }))
             .frame(false)
         };
-
-        let response = match kind {
-            EntryKind::Audio => self.add_audio_entry(path, ui, button),
-            EntryKind::File => Self::add_file(ui, button(&self.hovered_entry, &self.theme)),
-            EntryKind::Directory => {
-                let response = CollapsingHeader::new(RichText::new(name.clone()).color(if Some(path) == self.hovered_entry.as_deref() {
-                    self.theme.browser_folder_hover_text
-                } else {
-                    self.theme.browser_folder_text
-                }))
-                .id_salt(path)
-                .icon({
-                    let theme = Rc::clone(&self.theme);
-                    let hovered_entry = self.hovered_entry.clone();
-                    let path = path.to_path_buf();
-                    move |ui, openness, response| {
-                        Self::collapsing_header_icon(ui, &theme, &path, hovered_entry.as_deref(), openness, response);
+        let response = ui
+            .allocate_ui(vec2(0., ENTRY_HEIGHT), |ui| {
+                let response = match kind {
+                    EntryKind::Audio => self.add_audio_entry(path, ui, button),
+                    EntryKind::File => Self::add_file(ui, button(&self.hovered_entry, &self.theme)),
+                    EntryKind::Directory => {
+                        let response = CollapsingHeader::new(RichText::new(name.clone()).color(if Some(path) == self.hovered_entry.as_deref() {
+                            self.theme.browser_folder_hover_text
+                        } else {
+                            self.theme.browser_folder_text
+                        }))
+                        .id_salt(path)
+                        .icon({
+                            let theme = Rc::clone(&self.theme);
+                            let hovered_entry = self.hovered_entry.clone();
+                            let path = path.to_path_buf();
+                            move |ui, openness, response| {
+                                Self::collapsing_header_icon(ui, &theme, &path, hovered_entry.as_deref(), openness, response);
+                            }
+                        })
+                        .show(ui, |ui| {
+                            self.add_directory_contents(path, ui);
+                        });
+                        response.header_response
                     }
-                })
-                .show(ui, |ui| {
-                    self.add_directory_contents(path, ui);
-                });
-                response.header_response
-            }
-        };
-        let response = response.on_hover_cursor(CursorIcon::PointingHand);
-
+                };
+                ui.allocate_space(ui.available_size());
+                response
+            })
+            .response
+            .on_hover_cursor(CursorIcon::PointingHand);
         if response.clicked() {
             match kind {
                 EntryKind::Audio => {
@@ -348,7 +340,6 @@ impl Browser {
                 EntryKind::Directory => {}
             }
         }
-
         if response.hovered() {
             self.hovered_entry = Some(path.to_path_buf());
         } else {
