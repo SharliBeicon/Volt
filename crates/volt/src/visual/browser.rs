@@ -301,14 +301,13 @@ impl Browser {
             .flatten()
             .sorted_unstable_by_key(|entry| (Self::entry_kind_of(entry.path(), &self.cached_entry_kinds), entry.path()))
         {
+            entries.push(Entry {
+                path: entry.path(),
+                kind: Self::entry_kind_of(path, &self.cached_entry_kinds),
+                depth,
+            });
             if self.expanded_paths.contains(&entry.path()) {
                 self.entries(entries, &entry.path(), depth);
-            } else {
-                entries.push(Entry {
-                    path: entry.path(),
-                    kind: Self::entry_kind_of(path, &self.cached_entry_kinds),
-                    depth,
-                });
             }
         }
     }
@@ -347,7 +346,6 @@ impl Browser {
             .inner
             .inner;
         if response.clicked() {
-            dbg!();
             match entry.kind {
                 EntryKind::Audio => {
                     // TODO: Proper preview implementation with cpal. This is temporary (or at least make it work well with a proper preview widget)
@@ -363,7 +361,6 @@ impl Browser {
                     } else {
                         self.expanded_paths.push(entry.path);
                     }
-                    dbg!(&self.expanded_paths);
                 }
             }
         }
