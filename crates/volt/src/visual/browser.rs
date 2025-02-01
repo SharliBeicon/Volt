@@ -303,7 +303,7 @@ impl Browser {
         {
             entries.push(Entry {
                 path: entry.path(),
-                kind: Self::entry_kind_of(path, &self.cached_entry_kinds),
+                kind: Self::entry_kind_of(entry.path(), &self.cached_entry_kinds),
                 depth,
             });
             if self.expanded_paths.contains(&entry.path()) {
@@ -486,8 +486,7 @@ impl Browser {
     }
 
     fn add_file(ui: &mut Ui, button: Button<'_>) -> Response {
-        let InnerResponse { inner, response } = ui.horizontal(|ui| ui.add(Image::new(include_image!("../images/icons/file.png"))).union(ui.add(button)));
-        inner | response
+        ui.horizontal(|ui| ui.add(Image::new(include_image!("../images/icons/file.png"))).union(ui.add(button))).inner
     }
 }
 
