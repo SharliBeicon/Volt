@@ -24,7 +24,7 @@ use std::{
     time::{Duration, Instant},
 };
 use strum::Display;
-use tap::{Pipe, Tap};
+use tap::Pipe;
 use tracing::{error, trace};
 
 use egui::{
@@ -132,10 +132,9 @@ impl PreviewData {
 
 pub struct Browser {
     selected_category: Category,
-    other_category_hovered: bool,
     open_paths: Rc<RefCell<Vec<PathBuf>>>,
+    expanded_paths: Vec<PathBuf>,
     preview: Preview,
-    hovered_entry: Option<PathBuf>,
     theme: Rc<ThemeColors>,
     cached_entries: HashMap<PathBuf, CachedEntry>,
     watcher: RecommendedWatcher,
@@ -154,8 +153,8 @@ impl Browser {
         let watcher = recommended_watcher(watcher_tx).unwrap();
         Self {
             selected_category: Category::Files,
-            other_category_hovered: false,
             open_paths: Rc::new(RefCell::new(vec![PathBuf::from_str("/").unwrap()])),
+            expanded_paths: Vec::new(),
             preview: {
                 let (path_tx, path_rx) = channel::<PathBuf>();
                 let (file_data_tx, file_data_rx) = channel();
@@ -190,7 +189,6 @@ impl Browser {
                     file_data: None,
                 }
             },
-            hovered_entry: None,
             theme,
             cached_entries: HashMap::new(),
             watcher,
@@ -225,18 +223,25 @@ impl Browser {
     }
 
     // Widgets
-    pub fn button<'a>(theme: &'a ThemeColors, selected: bool, text: &'a str, hovered: bool) -> impl Widget + use<'a> {
+    pub fn button<'a>(theme: &'a ThemeColors, selected: bool, text: &'a str) -> impl Widget + use<'a> {
         move |ui: &mut Ui| {
-            let color = if selected {
-                theme.browser_selected_button_fg
-            } else if hovered {
-                theme.browser_unselected_hover_button_fg
-            } else {
-                theme.browser_unselected_button_fg
-            };
             ui.allocate_ui(vec2(0., 24.), |ui| {
-                let button = ui.centered_and_justified(|ui| Button::new(RichText::new(text).size(14.).color(color)).frame(false).ui(ui)).inner;
-                ui.visuals_mut().widgets.noninteractive.bg_stroke.color = color;
+                ui.visuals_mut().widgets.inactive.fg_stroke.color = theme.browser_unselected_button_fg;
+                ui.visuals_mut().widgets.hovered.fg_stroke.color = theme.browser_unselected_hover_button_fg;
+                let button = ui
+                    .centered_and_justified(|ui| {
+                        Button::new(RichText::new(text).size(14.).pipe(|text| if selected { text.color(theme.browser_selected_button_fg) } else { text }))
+                            .frame(false)
+                            .ui(ui)
+                    })
+                    .inner;
+                ui.visuals_mut().widgets.noninteractive.bg_stroke.color = if selected {
+                    theme.browser_selected_button_fg
+                } else if button.hovered() {
+                    theme.browser_unselected_hover_button_fg
+                } else {
+                    theme.browser_unselected_button_fg
+                };
                 ui.add(Separator::default().spacing(0.));
                 button
             })
@@ -244,7 +249,7 @@ impl Browser {
         }
     }
 
-    pub fn collapsing_header_icon(ui: &Ui, theme: &Rc<ThemeColors>, path: &Path, hovered_entry: Option<&Path>, openness: f32, response: &Response) {
+    pub fn collapsing_header_icon(ui: &Ui, theme: &Rc<ThemeColors>, openness: f32, response: &Response) {
         let visuals = ui.style().interact(response);
         let rect = Rect::from_center_size(response.rect.center(), response.rect.size() * 0.75).expand(visuals.expansion);
         let mut points = vec![rect.left_top(), rect.right_top(), rect.center_bottom()];
@@ -253,15 +258,7 @@ impl Browser {
             *p = rect.center() + rotation * (*p - rect.center());
         }
 
-        ui.painter().add(Shape::convex_polygon(
-            points,
-            if Some(path) == hovered_entry {
-                theme.browser_folder_hover_text
-            } else {
-                theme.browser_folder_text
-            },
-            Stroke::NONE,
-        ));
+        ui.painter().add(Shape::convex_polygon(points, theme.browser_folder_text, Stroke::NONE));
     }
 
     fn add_files(&mut self, ui: &mut Ui) -> Response {
@@ -287,38 +284,31 @@ impl Browser {
             return ui.allocate_response(vec2(0.0, ENTRY_HEIGHT), Sense::hover());
         }
         let name = path.file_name().map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
-        let button = |hovered_entry: &Option<PathBuf>, theme: &Rc<ThemeColors>| {
-            Button::new(RichText::new(&*name).color(match (Some(path) == hovered_entry.as_deref(), matches!(&name, &Cow::Owned(_))) {
-                (true, true) => theme.browser_unselected_hover_button_fg_invalid,
-                (true, false) => theme.browser_unselected_hover_button_fg,
-                (false, true) => theme.browser_unselected_button_fg_invalid,
-                (false, false) => theme.browser_unselected_button_fg,
+        let button = |theme: &ThemeColors| -> Button<'static> {
+            Button::new(RichText::new(&*name).color(if matches!(&name, &Cow::Owned(_)) {
+                theme.browser_unselected_button_fg_invalid
+            } else {
+                theme.browser_unselected_button_fg
             }))
             .frame(false)
         };
         let response = ui
             .allocate_ui(vec2(0., ENTRY_HEIGHT), |ui| {
                 let response = match kind {
-                    EntryKind::Audio => self.add_audio_entry(path, ui, button),
-                    EntryKind::File => Self::add_file(ui, button(&self.hovered_entry, &self.theme)),
+                    EntryKind::Audio => self.add_audio_entry(path, ui, &Rc::clone(&self.theme), button),
+                    EntryKind::File => Self::add_file(ui, button(&self.theme)),
                     EntryKind::Directory => {
-                        let response = CollapsingHeader::new(RichText::new(name.clone()).color(if Some(path) == self.hovered_entry.as_deref() {
-                            self.theme.browser_folder_hover_text
-                        } else {
-                            self.theme.browser_folder_text
-                        }))
-                        .id_salt(path)
-                        .icon({
-                            let theme = Rc::clone(&self.theme);
-                            let hovered_entry = self.hovered_entry.clone();
-                            let path = path.to_path_buf();
-                            move |ui, openness, response| {
-                                Self::collapsing_header_icon(ui, &theme, &path, hovered_entry.as_deref(), openness, response);
-                            }
-                        })
-                        .show(ui, |ui| {
-                            self.add_directory_contents(path, ui);
-                        });
+                        let response = CollapsingHeader::new(RichText::new(name.clone()).color(self.theme.browser_folder_text))
+                            .id_salt(path)
+                            .icon({
+                                let theme = Rc::clone(&self.theme);
+                                move |ui, openness, response| {
+                                    Self::collapsing_header_icon(ui, &theme, openness, response);
+                                }
+                            })
+                            .show(ui, |ui| {
+                                self.add_directory_contents(path, ui);
+                            });
                         response.header_response
                     }
                 };
@@ -340,38 +330,27 @@ impl Browser {
                 EntryKind::Directory => {}
             }
         }
-        if response.hovered() {
-            self.hovered_entry = Some(path.to_path_buf());
-        } else {
-            let mut path_buf = PathBuf::new();
-            path_buf.push(Path::new(""));
-            if self.hovered_entry.as_ref().unwrap_or(&path_buf).to_str().unwrap_or_default() == path.to_path_buf().to_str().unwrap_or_default() {
-                self.hovered_entry = None;
-            }
-        }
         response
     }
 
-    fn add_audio_entry(&mut self, path: &Path, ui: &mut Ui, button: impl Fn(&Option<PathBuf>, &Rc<ThemeColors>) -> Button<'static>) -> Response {
+    fn add_audio_entry(&mut self, path: &Path, ui: &mut Ui, theme: &Rc<ThemeColors>, button: impl Fn(&ThemeColors) -> Button<'static>) -> Response {
         let mut add_contents = |ui: &mut Ui| {
             ui.horizontal(|ui| {
-                ui.add(Image::new(include_image!("../images/icons/audio.png")))
-                    .union(ui.add(button(&self.hovered_entry, &self.theme)))
-                    .pipe(|response| {
-                        let data = self.preview.data();
-                        if let Some(data @ PreviewData { length: Some(length), .. }) = self.preview.path.as_ref().filter(|preview_path| *preview_path == path).zip(data).map(|(_, data)| data) {
-                            ui.ctx().request_repaint();
-                            response.union(ui.label(format!(
-                                "{:>02}:{:>02} of {:>02}:{:>02}",
-                                data.progress().as_secs() / 60,
-                                data.progress().as_secs() % 60,
-                                length.as_secs() / 60,
-                                length.as_secs() % 60
-                            )))
-                        } else {
-                            response
-                        }
-                    })
+                ui.add(Image::new(include_image!("../images/icons/audio.png"))).union(ui.add(button(theme))).pipe(|response| {
+                    let data = self.preview.data();
+                    if let Some(data @ PreviewData { length: Some(length), .. }) = self.preview.path.as_ref().filter(|preview_path| *preview_path == path).zip(data).map(|(_, data)| data) {
+                        ui.ctx().request_repaint();
+                        response.union(ui.label(format!(
+                            "{:>02}:{:>02} of {:>02}:{:>02}",
+                            data.progress().as_secs() / 60,
+                            data.progress().as_secs() % 60,
+                            length.as_secs() / 60,
+                            length.as_secs() % 60
+                        )))
+                    } else {
+                        response
+                    }
+                })
             })
         };
         let mut response = if ui.ctx().is_being_dragged(Id::new(path.to_owned())) {
@@ -489,11 +468,7 @@ impl Widget for &mut Browser {
                         .map(|(category, ui)| {
                             let selected = self.selected_category == category;
                             let string = category.to_string();
-                            let mut response = ui.add(Browser::button(&self.theme, selected, &string, self.other_category_hovered));
-                            if !selected {
-                                response = response.on_hover_cursor(CursorIcon::PointingHand);
-                                self.other_category_hovered = response.hovered();
-                            }
+                            let response = ui.add(Browser::button(&self.theme, selected, &string));
                             if response.clicked() {
                                 self.selected_category = category;
                             }
