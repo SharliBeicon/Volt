@@ -12,7 +12,7 @@ use std::{
     f32::consts::PI,
     fs::{read_dir, DirEntry, File},
     io::{self, BufReader},
-    iter::Iterator,
+    iter::{once, Iterator, Once},
     ops::BitOr,
     path::{Path, PathBuf},
     rc::Rc,
@@ -26,7 +26,7 @@ use std::{
     time::{Duration, Instant},
 };
 use strum::Display;
-use tap::Pipe;
+use tap::{Pipe, Tap};
 use tracing::{error, trace};
 
 use egui::{
@@ -75,7 +75,7 @@ enum_with_array! {
 pub struct Entry {
     pub path: PathBuf,
     pub kind: EntryKind,
-    pub indent: usize,
+    pub depth: usize,
 }
 
 #[derive(Display, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -134,7 +134,7 @@ impl PreviewData {
 
 pub struct Browser {
     selected_category: Category,
-    open_paths: Rc<RefCell<Vec<PathBuf>>>,
+    open_paths: Vec<PathBuf>,
     expanded_paths: Vec<PathBuf>,
     preview: Preview,
     theme: Rc<ThemeColors>,
@@ -157,7 +157,7 @@ impl Browser {
         Self {
             selected_category: Category::Files,
             collapsing_headers: HashMap::new(),
-            open_paths: Rc::new(RefCell::new(vec![PathBuf::from_str("/").unwrap()])),
+            open_paths: vec![PathBuf::from_str("/").unwrap()],
             expanded_paths: Vec::new(),
             preview: {
                 let (path_tx, path_rx) = channel::<PathBuf>();
@@ -208,6 +208,7 @@ impl Browser {
                 EntryKind::Directory
             } else {
                 path.extension().and_then(|ext| ext.to_str()).map_or(EntryKind::File, |extension| {
+                    const AUDIO_EXTENSIONS: [&str; 6] = ["flac", "mp3", "ogg", "opus", "wav", "wave"];
                     if AUDIO_EXTENSIONS.into_iter().any(|other| other.eq_ignore_ascii_case(extension)) {
                         EntryKind::Audio
                     } else {
@@ -233,11 +234,7 @@ impl Browser {
                 ui.visuals_mut().widgets.inactive.fg_stroke.color = theme.browser_unselected_button_fg;
                 ui.visuals_mut().widgets.hovered.fg_stroke.color = theme.browser_unselected_hover_button_fg;
                 let button = ui
-                    .centered_and_justified(|ui| {
-                        Button::new(RichText::new(text).size(14.).pipe(|text| if selected { text.color(theme.browser_selected_button_fg) } else { text }))
-                            .frame(false)
-                            .ui(ui)
-                    })
+                    .centered_and_justified(|ui| Button::new(RichText::new(text).size(14.).pipe(|text| if selected { text.color(theme.browser_selected_button_fg) } else { text })).ui(ui))
                     .inner;
                 ui.visuals_mut().widgets.noninteractive.bg_stroke.color = if selected {
                     theme.browser_selected_button_fg
@@ -271,67 +268,103 @@ impl Browser {
             .inner_margin(Margin::same(8.))
             .show(ui, |ui| {
                 ui.vertical(|ui| {
-                    for path in Rc::clone(&self.open_paths).borrow().iter() {
-                        self.add_entry(path, ui);
+                    let mut entries = Vec::new();
+                    for path in &self.open_paths {
+                        self.entries(&mut entries, path, 0);
+                    }
+                    ui.visuals_mut().widgets.noninteractive.fg_stroke.color = self.theme.browser_folder_text;
+                    ui.visuals_mut().widgets.hovered.fg_stroke.color = self.theme.browser_folder_hover_text;
+                    for entry in entries {
+                        self.add_entry(entry, ui);
                     }
                 })
             })
             .response
     }
 
-    fn add_entry(&mut self, path: &Path, ui: &mut Ui) -> Response {
+    fn entries(&self, entries: &mut Vec<Entry>, path: &Path, mut depth: usize) {
+        if depth == 0 {
+            entries.push(Entry {
+                path: path.to_path_buf(),
+                kind: Self::entry_kind_of(path, &self.cached_entry_kinds),
+                depth,
+            });
+        }
+        if !self.expanded_paths.iter().any(|expanded| expanded == path) {
+            return;
+        }
+        depth += 1;
+        for entry in path
+            .read_dir()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .sorted_unstable_by_key(|entry| (Self::entry_kind_of(entry.path(), &self.cached_entry_kinds), entry.path()))
+        {
+            if self.expanded_paths.contains(&entry.path()) {
+                self.entries(entries, &entry.path(), depth);
+            } else {
+                entries.push(Entry {
+                    path: entry.path(),
+                    kind: Self::entry_kind_of(path, &self.cached_entry_kinds),
+                    depth,
+                });
+            }
+        }
+    }
+
+    fn add_entry(&mut self, entry: Entry, ui: &mut Ui) -> Response {
         const ENTRY_HEIGHT: f32 = 20.;
         let next_top = ui.next_widget_position().y;
         let next_bottom = next_top + ENTRY_HEIGHT;
-        let kind = Self::entry_kind_of(path, &self.cached_entry_kinds);
-        if next_top >= ui.clip_rect().bottom() || next_bottom <= ui.clip_rect().top() && kind != EntryKind::Directory {
+        if next_top >= ui.clip_rect().bottom() || next_bottom <= ui.clip_rect().top() && entry.kind != EntryKind::Directory {
             return ui.allocate_response(vec2(0.0, ENTRY_HEIGHT), Sense::hover());
         }
-        let name = path.file_name().map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
+        let name = entry.path.file_name().map_or_else(|| entry.path.to_string_lossy(), |name| name.to_string_lossy());
         let button = |theme: &ThemeColors| -> Button<'static> {
-            Button::new(RichText::new(&*name).color(if matches!(&name, &Cow::Owned(_)) {
-                theme.browser_unselected_button_fg_invalid
-            } else {
-                theme.browser_unselected_button_fg
+            Button::new(RichText::new(name.to_string()).pipe(|text| {
+                if matches!(&name, &Cow::Owned(_)) {
+                    text.color(theme.browser_unselected_button_fg_invalid)
+                } else {
+                    text
+                }
             }))
-            .frame(false)
         };
         let response = ui
-            .allocate_ui(vec2(0., ENTRY_HEIGHT), |ui| {
-                let response = match kind {
-                    EntryKind::Audio => self.add_audio_entry(path, ui, &Rc::clone(&self.theme), button),
-                    EntryKind::File => Self::add_file(ui, button(&self.theme)),
-                    EntryKind::Directory => {
-                        let response = CollapsingHeader::new(RichText::new(name.clone()).color(self.theme.browser_folder_text))
-                            .id_salt(path)
-                            .icon({
-                                let theme = Rc::clone(&self.theme);
-                                move |ui, openness, response| {
-                                    Self::collapsing_header_icon(ui, &theme, openness, response);
-                                }
-                            })
-                            .show(ui, |ui| {
-                                self.add_directory_contents(path, ui);
-                            });
-                        response.header_response
+            .allocate_ui(vec2(f32::INFINITY, ENTRY_HEIGHT), |ui| {
+                ui.horizontal(|ui| {
+                    const INDENT_SIZE: f32 = 16.;
+                    #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
+                    #[allow(clippy::cast_precision_loss, reason = "this is a visual effect")]
+                    ui.add_space(INDENT_SIZE * entry.depth as f32);
+                    match entry.kind {
+                        EntryKind::Audio => self.add_audio_entry(&entry.path, ui, &Rc::clone(&self.theme), button),
+                        EntryKind::File => Self::add_file(ui, button(&self.theme)),
+                        EntryKind::Directory => ui.add(button(&self.theme)),
                     }
-                };
-                ui.allocate_space(ui.available_size());
-                response
+                })
             })
-            .response
-            .on_hover_cursor(CursorIcon::PointingHand);
+            .inner
+            .inner;
         if response.clicked() {
-            match kind {
+            dbg!();
+            match entry.kind {
                 EntryKind::Audio => {
                     // TODO: Proper preview implementation with cpal. This is temporary (or at least make it work well with a proper preview widget)
                     // Also, don't spawn a new thread - instead, dedicate a thread for preview
-                    self.preview.play_file(path.to_path_buf());
+                    self.preview.play_file(entry.path.clone());
                 }
                 EntryKind::File => {
-                    that_detached(path).unwrap();
+                    that_detached(entry.path).unwrap();
                 }
-                EntryKind::Directory => {}
+                EntryKind::Directory => {
+                    if let Some(index) = self.expanded_paths.iter().position(|expanded| expanded == &entry.path) {
+                        self.expanded_paths.swap_remove(index);
+                    } else {
+                        self.expanded_paths.push(entry.path);
+                    }
+                    dbg!(&self.expanded_paths);
+                }
             }
         }
         response
@@ -375,82 +408,82 @@ impl Browser {
         response
     }
 
-    fn add_directory_contents(&mut self, path: &Path, ui: &mut Ui) -> Option<Response> {
-        match self.watcher_rx.try_recv() {
-            Ok(event) => {
-                let event = event.unwrap();
-                match event.kind {
-                    EventKind::Access(_) => {}
-                    _ => {
-                        for path in event.paths.iter().map(|path| if path.is_dir() { path } else { path.parent().unwrap() }) {
-                            self.cached_entries.remove(path);
-                        }
-                    }
-                }
-            }
-            Err(TryRecvError::Disconnected) => {
-                panic!()
-            }
-            Err(TryRecvError::Empty) => {}
-        }
-        let CachedEntry { rx, entries } = self.cached_entries.entry(path.to_path_buf()).or_insert_with(|| {
-            trace!("entry cache miss for {:?}", path);
-            if let Err(error) = self.watcher.watch(path, RecursiveMode::NonRecursive) {
-                error!("Unexpected error while trying to watch directory: {:?}", error);
-            }
-            let (tx, rx) = channel();
-            let read_dir = read_dir(path);
-            let cached_entry_kinds = Arc::clone(&self.cached_entry_kinds);
-            spawn(move || {
-                tx.send(read_dir.and_then(|entries| {
-                    entries
-                        .map(|entry| {
-                            {
-                                match entry {
-                                    Ok(ref x) => Ok(x),
-                                    Err(x) => Err(x),
-                                }
-                            }
-                            .map(DirEntry::path)
-                        })
-                        .sorted_unstable_by(|a, b| {
-                            let a = a.as_ref().ok();
-                            let b = b.as_ref().ok();
-                            Ord::cmp(
-                                &(a.map(|path| Self::entry_kind_of(path, &cached_entry_kinds)), a),
-                                &(b.map(|path| Self::entry_kind_of(path, &cached_entry_kinds)), b),
-                            )
-                        })
-                        .try_collect()
-                }))
-                .unwrap();
-            });
-            CachedEntry { rx, entries: None }
-        });
-        match entries {
-            Some(result) => match result {
-                Ok(entries) => Rc::clone(entries).iter().map(|path| self.add_entry(path, ui)).reduce(Response::bitor),
-                Err(error) => Some(ui.label(format!("Failed to load contents: {error}"))),
-            },
-            None => match rx.try_recv() {
-                Ok(Ok(recv_entries)) => {
-                    *entries = Some(Ok(recv_entries.into()));
-                    Some(Self::loading(ui))
-                }
-                Ok(Err(error)) => {
-                    *entries = Some(Err(error));
-                    None
-                }
-                Err(TryRecvError::Disconnected) => None,
-                Err(TryRecvError::Empty) => Some(Self::loading(ui)),
-            },
-        }
-    }
+    // fn add_directory_contents(&mut self, path: &Path, ui: &mut Ui) -> Option<Response> {
+    //     match self.watcher_rx.try_recv() {
+    //         Ok(event) => {
+    //             let event = event.unwrap();
+    //             match event.kind {
+    //                 EventKind::Access(_) => {}
+    //                 _ => {
+    //                     for path in event.paths.iter().map(|path| if path.is_dir() { path } else { path.parent().unwrap() }) {
+    //                         self.cached_entries.remove(path);
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //         Err(TryRecvError::Disconnected) => {
+    //             panic!()
+    //         }
+    //         Err(TryRecvError::Empty) => {}
+    //     }
+    //     let CachedEntry { rx, entries } = self.cached_entries.entry(path.to_path_buf()).or_insert_with(|| {
+    //         trace!("entry cache miss for {:?}", path);
+    //         if let Err(error) = self.watcher.watch(path, RecursiveMode::NonRecursive) {
+    //             error!("Unexpected error while trying to watch directory: {:?}", error);
+    //         }
+    //         let (tx, rx) = channel();
+    //         let read_dir = read_dir(path);
+    //         let cached_entry_kinds = Arc::clone(&self.cached_entry_kinds);
+    //         spawn(move || {
+    //             tx.send(read_dir.and_then(|entries| {
+    //                 entries
+    //                     .map(|entry| {
+    //                         {
+    //                             match entry {
+    //                                 Ok(ref x) => Ok(x),
+    //                                 Err(x) => Err(x),
+    //                             }
+    //                         }
+    //                         .map(DirEntry::path)
+    //                     })
+    //                     .sorted_unstable_by(|a, b| {
+    //                         let a = a.as_ref().ok();
+    //                         let b = b.as_ref().ok();
+    //                         Ord::cmp(
+    //                             &(a.map(|path| Self::entry_kind_of(path, &cached_entry_kinds)), a),
+    //                             &(b.map(|path| Self::entry_kind_of(path, &cached_entry_kinds)), b),
+    //                         )
+    //                     })
+    //                     .try_collect()
+    //             }))
+    //             .unwrap();
+    //         });
+    //         CachedEntry { rx, entries: None }
+    //     });
+    //     match entries {
+    //         Some(result) => match result {
+    //             Ok(entries) => Rc::clone(entries).iter().map(|path| self.add_entry(path, ui)).reduce(Response::bitor),
+    //             Err(error) => Some(ui.label(format!("Failed to load contents: {error}"))),
+    //         },
+    //         None => match rx.try_recv() {
+    //             Ok(Ok(recv_entries)) => {
+    //                 *entries = Some(Ok(recv_entries.into()));
+    //                 Some(Self::loading(ui))
+    //             }
+    //             Ok(Err(error)) => {
+    //                 *entries = Some(Err(error));
+    //                 None
+    //             }
+    //             Err(TryRecvError::Disconnected) => None,
+    //             Err(TryRecvError::Empty) => Some(Self::loading(ui)),
+    //         },
+    //     }
+    // }
 
-    fn handle_file_or_folder_drop(&self, ctx: &Context) {
+    fn handle_file_or_folder_drop(&mut self, ctx: &Context) {
         ctx.input(|input| {
             for path in input.raw.dropped_files.iter().filter_map(|DroppedFile { path, .. }| path.as_deref()) {
-                self.open_paths.borrow_mut().push(path.to_path_buf());
+                self.open_paths.push(path.to_path_buf());
             }
         });
     }
@@ -465,6 +498,8 @@ impl Widget for &mut Browser {
     fn ui(self, ui: &mut Ui) -> Response {
         ui.add_space(6.);
         ui.vertical(|ui| {
+            ui.visuals_mut().button_frame = false;
+            ui.visuals_mut().interact_cursor = Some(CursorIcon::PointingHand);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 16.;
                 ui.columns_const(|uis| {
@@ -506,5 +541,3 @@ impl Widget for &mut Browser {
         .inner
     }
 }
-
-const AUDIO_EXTENSIONS: [&str; 6] = ["flac", "mp3", "ogg", "opus", "wav", "wave"];
