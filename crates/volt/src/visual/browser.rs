@@ -8,9 +8,9 @@ use rodio::{Decoder, OutputStream, Sink, Source};
 use std::{
     borrow::Cow,
     collections::HashMap,
-    f32::consts::PI,
+    f32::consts::{FRAC_PI_2, PI},
     fs::{read_dir, DirEntry, File},
-    io::{BufReader},
+    io::BufReader,
     iter::Iterator,
     ops::BitOr,
     path::{Path, PathBuf},
@@ -31,8 +31,8 @@ use tracing::{error, trace};
 
 use egui::{
     emath::{self, TSTransform},
-    include_image, remap, vec2, Button, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, LayerId, Margin, Order, Rect, Response, RichText, ScrollArea, Sense,
-    Separator, Shape, Stroke, Ui, UiBuilder, Widget,
+    include_image, remap, vec2, Button, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, LayerId, Margin, Order, Rect, Response, RichText, ScrollArea, Sense, Separator, Shape, Stroke, Ui,
+    UiBuilder, Vec2, Widget,
 };
 
 use crate::visual::ThemeColors;
@@ -248,16 +248,19 @@ impl Browser {
         }
     }
 
-    pub fn collapsing_header_icon(ui: &Ui, theme: &Rc<ThemeColors>, openness: f32, response: &Response) {
-        let visuals = ui.style().interact(response);
-        let rect = Rect::from_center_size(response.rect.center(), response.rect.size() * 0.75).expand(visuals.expansion);
-        let mut points = vec![rect.left_top(), rect.right_top(), rect.center_bottom()];
-        let rotation = emath::Rot2::from_angle(remap(openness, 0. ..=1., -PI / 2. ..=0.));
-        for p in &mut points {
-            *p = rect.center() + rotation * (*p - rect.center());
+    pub fn collapsing_header_icon(&self, openness: f32) -> impl Widget + use<'_> {
+        move |ui: &mut Ui| {
+            ui.allocate_painter(Vec2::splat(ui.available_height()), Sense::hover()).pipe(|(response, painter)| {
+                let rect = response.rect.shrink(6.);
+                let mut points = vec![rect.left_top(), rect.right_top(), rect.center_bottom()];
+                let rotation = emath::Rot2::from_angle((openness - 1.) * FRAC_PI_2);
+                for p in &mut points {
+                    *p = rect.center() + rotation * (*p - rect.center());
+                }
+                painter.add(Shape::convex_polygon(points, self.theme.browser_folder_text, Stroke::NONE));
+                response
+            })
         }
-
-        ui.painter().add(Shape::convex_polygon(points, theme.browser_folder_text, Stroke::NONE));
     }
 
     fn add_files(&mut self, ui: &mut Ui) -> Response {
@@ -268,6 +271,7 @@ impl Browser {
                 ui.vertical(|ui| {
                     ui.visuals_mut().widgets.noninteractive.fg_stroke.color = self.theme.browser_folder_text;
                     ui.visuals_mut().widgets.hovered.fg_stroke.color = self.theme.browser_folder_hover_text;
+                    ui.style_mut().spacing.item_spacing.x = 4.;
                     for entry in self.open_paths.iter().fold(Vec::new(), |mut entries, path| {
                         Self::entries(
                             &mut entries,
@@ -361,6 +365,7 @@ impl Browser {
         entries
     }
 
+    #[allow(clippy::too_many_arguments, reason = "borrowing `&mut self` partially is not possible")]
     fn entries(
         entries: &mut Vec<Entry>,
         path: &Path,
@@ -427,7 +432,10 @@ impl Browser {
                     match entry.kind {
                         EntryKind::Audio => self.add_audio_entry(&entry.path, ui, &Rc::clone(&self.theme), button),
                         EntryKind::File => Self::add_file(ui, button(&self.theme)),
-                        EntryKind::Directory => ui.add(button(&self.theme)),
+                        EntryKind::Directory => {
+                            ui.horizontal(|ui| ui.add(self.collapsing_header_icon(f32::from(self.expanded_paths.contains(&entry.path)))) | ui.add(button(&self.theme)))
+                                .inner
+                        }
                     }
                 })
             })
@@ -462,13 +470,14 @@ impl Browser {
                     let data = self.preview.data();
                     if let Some(data @ PreviewData { length: Some(length), .. }) = self.preview.path.as_ref().filter(|preview_path| *preview_path == path).zip(data).map(|(_, data)| data) {
                         ui.ctx().request_repaint();
-                        response.union(ui.label(format!(
-                            "{:>02}:{:>02} of {:>02}:{:>02}",
-                            data.progress().as_secs() / 60,
-                            data.progress().as_secs() % 60,
-                            length.as_secs() / 60,
-                            length.as_secs() % 60
-                        )))
+                        response
+                            | ui.label(format!(
+                                "{:>02}:{:>02} of {:>02}:{:>02}",
+                                data.progress().as_secs() / 60,
+                                data.progress().as_secs() % 60,
+                                length.as_secs() / 60,
+                                length.as_secs() % 60
+                            ))
                     } else {
                         response
                     }
@@ -574,7 +583,7 @@ impl Browser {
     }
 
     fn add_file(ui: &mut Ui, button: Button<'_>) -> Response {
-        ui.horizontal(|ui| ui.add(Image::new(include_image!("../images/icons/file.png"))).union(ui.add(button))).inner
+        ui.horizontal(|ui| ui.add(Image::new(include_image!("../images/icons/file.png"))) | (ui.add(button))).inner
     }
 }
 
