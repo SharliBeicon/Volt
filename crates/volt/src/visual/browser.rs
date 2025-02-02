@@ -7,12 +7,11 @@ use open::that_detached;
 use rodio::{Decoder, OutputStream, Sink, Source};
 use std::{
     borrow::Cow,
-    cell::RefCell,
     collections::HashMap,
     f32::consts::PI,
     fs::{read_dir, DirEntry, File},
-    io::{self, BufReader},
-    iter::{once, Iterator, Once},
+    io::{BufReader},
+    iter::Iterator,
     ops::BitOr,
     path::{Path, PathBuf},
     rc::Rc,
@@ -22,16 +21,17 @@ use std::{
         mpsc::{channel, Receiver, Sender, TryRecvError},
         Arc, RwLock,
     },
+    task::Poll,
     thread::spawn,
     time::{Duration, Instant},
 };
 use strum::Display;
-use tap::{Pipe, Tap};
+use tap::Pipe;
 use tracing::{error, trace};
 
 use egui::{
     emath::{self, TSTransform},
-    include_image, remap, vec2, Button, CollapsingHeader, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, InnerResponse, LayerId, Margin, Order, Rect, Response, RichText, ScrollArea, Sense,
+    include_image, remap, vec2, Button, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, LayerId, Margin, Order, Rect, Response, RichText, ScrollArea, Sense,
     Separator, Shape, Stroke, Ui, UiBuilder, Widget,
 };
 
@@ -73,9 +73,9 @@ enum_with_array! {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
-    pub path: PathBuf,
-    pub kind: EntryKind,
-    pub depth: usize,
+    path: PathBuf,
+    kind: EntryKind,
+    depth: usize,
 }
 
 #[derive(Display, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -142,12 +142,11 @@ pub struct Browser {
     watcher: RecommendedWatcher,
     watcher_rx: Receiver<notify::Result<Event>>,
     cached_entry_kinds: Arc<RwLock<HashMap<PathBuf, EntryKind>>>,
-    collapsing_headers: HashMap<PathBuf, bool>,
 }
 
 struct CachedEntry {
-    rx: Receiver<io::Result<Vec<PathBuf>>>,
-    entries: Option<io::Result<Rc<[PathBuf]>>>,
+    rx: Receiver<Option<Vec<PathBuf>>>,
+    entries: Poll<Option<Rc<[PathBuf]>>>,
 }
 
 impl Browser {
@@ -156,7 +155,6 @@ impl Browser {
         let watcher = recommended_watcher(watcher_tx).unwrap();
         Self {
             selected_category: Category::Files,
-            collapsing_headers: HashMap::new(),
             open_paths: vec![PathBuf::from_str("/").unwrap()],
             expanded_paths: Vec::new(),
             preview: {
@@ -201,7 +199,7 @@ impl Browser {
         }
     }
 
-    fn entry_kind_of(path: impl AsRef<Path>, cached_entry_kinds: &Arc<RwLock<HashMap<PathBuf, EntryKind>>>) -> EntryKind {
+    fn entry_kind_of(path: impl AsRef<Path>, cached_entry_kinds: &RwLock<HashMap<PathBuf, EntryKind>>) -> EntryKind {
         let path = path.as_ref();
         *cached_entry_kinds.write().unwrap().entry(path.to_path_buf()).or_insert_with(|| {
             if path.is_dir() {
@@ -268,13 +266,21 @@ impl Browser {
             .inner_margin(Margin::same(8.))
             .show(ui, |ui| {
                 ui.vertical(|ui| {
-                    let mut entries = Vec::new();
-                    for path in &self.open_paths {
-                        self.entries(&mut entries, path, 0);
-                    }
                     ui.visuals_mut().widgets.noninteractive.fg_stroke.color = self.theme.browser_folder_text;
                     ui.visuals_mut().widgets.hovered.fg_stroke.color = self.theme.browser_folder_hover_text;
-                    for entry in entries {
+                    for entry in self.open_paths.iter().fold(Vec::new(), |mut entries, path| {
+                        Self::entries(
+                            &mut entries,
+                            path,
+                            0,
+                            &mut self.cached_entries,
+                            &self.cached_entry_kinds,
+                            &self.expanded_paths,
+                            &self.watcher_rx,
+                            &mut self.watcher,
+                        );
+                        entries
+                    }) {
                         self.add_entry(entry, ui);
                     }
                 })
@@ -282,32 +288,114 @@ impl Browser {
             .response
     }
 
-    fn entries(&self, entries: &mut Vec<Entry>, path: &Path, mut depth: usize) {
+    fn list_cached<'a>(
+        path: &Path,
+        cached_entries: &'a mut HashMap<PathBuf, CachedEntry>,
+        watcher_rx: &Receiver<notify::Result<Event>>,
+        watcher: &mut RecommendedWatcher,
+        cached_entry_kinds: &Arc<RwLock<HashMap<PathBuf, EntryKind>>>,
+    ) -> &'a Poll<Option<Rc<[PathBuf]>>> {
+        match watcher_rx.try_recv() {
+            Ok(event) => {
+                let event = event.unwrap();
+                match event.kind {
+                    EventKind::Access(_) => {}
+                    _ => {
+                        for path in event.paths.iter().map(|path| if path.is_dir() { path } else { path.parent().unwrap() }) {
+                            cached_entries.remove(path);
+                        }
+                    }
+                }
+            }
+            Err(TryRecvError::Disconnected) => {
+                panic!()
+            }
+            Err(TryRecvError::Empty) => {}
+        }
+        let CachedEntry { rx, entries } = cached_entries.entry(path.to_path_buf()).or_insert_with(|| {
+            trace!("entry cache miss for {:?}", path);
+            if let Err(error) = watcher.watch(path, RecursiveMode::NonRecursive) {
+                error!("Unexpected error while trying to watch directory: {:?}", error);
+            }
+            let (tx, rx) = channel();
+            let read_dir = read_dir(path);
+            let cached_entry_kinds = Arc::clone(cached_entry_kinds);
+            spawn(move || {
+                tx.send(read_dir.ok().and_then(|entries| {
+                    entries
+                        .map(|entry| {
+                            {
+                                match entry {
+                                    Ok(ref x) => Ok(x),
+                                    Err(x) => Err(x),
+                                }
+                            }
+                            .map(DirEntry::path)
+                        })
+                        .sorted_unstable_by(|a, b| {
+                            let a = a.as_ref().ok();
+                            let b = b.as_ref().ok();
+                            Ord::cmp(
+                                &(a.map(|path| Self::entry_kind_of(path, &cached_entry_kinds)), a),
+                                &(b.map(|path| Self::entry_kind_of(path, &cached_entry_kinds)), b),
+                            )
+                        })
+                        .try_collect()
+                        .ok()
+                }))
+                .unwrap();
+            });
+            CachedEntry { rx, entries: Poll::Pending }
+        });
+        if entries.is_pending() {
+            match rx.try_recv() {
+                Ok(Some(list)) => {
+                    *entries = Poll::Ready(Some(list.into()));
+                }
+                Ok(None) => {
+                    *entries = Poll::Ready(None);
+                }
+                Err(_) => {}
+            }
+        }
+        entries
+    }
+
+    fn entries(
+        entries: &mut Vec<Entry>,
+        path: &Path,
+        mut depth: usize,
+        cached_entries: &mut HashMap<PathBuf, CachedEntry>,
+        cached_entry_kinds: &Arc<RwLock<HashMap<PathBuf, EntryKind>>>,
+        expanded_paths: &[PathBuf],
+        watcher_rx: &Receiver<notify::Result<Event>>,
+        watcher: &mut RecommendedWatcher,
+    ) {
         if depth == 0 {
             entries.push(Entry {
                 path: path.to_path_buf(),
-                kind: Self::entry_kind_of(path, &self.cached_entry_kinds),
+                kind: Self::entry_kind_of(path, cached_entry_kinds),
                 depth,
             });
         }
-        if !self.expanded_paths.iter().any(|expanded| expanded == path) {
+        if !expanded_paths.iter().any(|expanded| expanded == path) {
             return;
         }
         depth += 1;
-        for entry in path
-            .read_dir()
-            .into_iter()
-            .flatten()
-            .flatten()
-            .sorted_unstable_by_key(|entry| (Self::entry_kind_of(entry.path(), &self.cached_entry_kinds), entry.path()))
-        {
-            entries.push(Entry {
-                path: entry.path(),
-                kind: Self::entry_kind_of(entry.path(), &self.cached_entry_kinds),
-                depth,
-            });
-            if self.expanded_paths.contains(&entry.path()) {
-                self.entries(entries, &entry.path(), depth);
+        if let Poll::Ready(Some(list)) = Self::list_cached(path, cached_entries, watcher_rx, watcher, cached_entry_kinds) {
+            for entry in list
+                .iter()
+                .cloned()
+                .sorted_unstable_by(|a, b| Ord::cmp(&(Self::entry_kind_of(a, cached_entry_kinds), a), &(Self::entry_kind_of(b, cached_entry_kinds), b)))
+            {
+                entries.push(Entry {
+                    path: entry.clone(),
+                    kind: Self::entry_kind_of(&entry, cached_entry_kinds),
+                    depth,
+                });
+                if expanded_paths.contains(&entry) {
+                    Self::entries(entries, &entry, depth, cached_entries, cached_entry_kinds, expanded_paths, watcher_rx, watcher);
+                }
             }
         }
     }
