@@ -8,7 +8,7 @@ use rodio::{Decoder, OutputStream, Sink, Source};
 use std::{
     borrow::Cow,
     collections::HashMap,
-    f32::consts::{FRAC_PI_2, PI},
+    f32::consts::FRAC_PI_2,
     fs::{read_dir, DirEntry, File},
     io::BufReader,
     iter::Iterator,
@@ -17,11 +17,7 @@ use std::{
     rc::Rc,
     str::FromStr,
     string::ToString,
-    sync::{
-        mpsc::{channel, Receiver, Sender, TryRecvError},
-        Arc, RwLock,
-    },
-    task::Poll,
+    sync::{Arc, RwLock},
     thread::spawn,
     time::{Duration, Instant},
 };
@@ -31,9 +27,11 @@ use tracing::{error, trace};
 
 use egui::{
     emath::{self, TSTransform},
-    include_image, remap, vec2, Button, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, LayerId, Margin, Order, Rect, Response, RichText, ScrollArea, Sense, Separator, Shape, Stroke, Ui,
+    include_image, vec2, Button, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, LayerId, Margin, Order, Response, RichText, ScrollArea, Sense, Separator, Shape, Stroke, Ui,
     UiBuilder, Vec2, Widget,
 };
+
+use crossbeam_channel::{unbounded, Receiver, Sender};
 
 use crate::visual::ThemeColors;
 
@@ -138,28 +136,47 @@ pub struct Browser {
     expanded_paths: Vec<PathBuf>,
     preview: Preview,
     theme: Rc<ThemeColors>,
-    cached_entries: HashMap<PathBuf, CachedEntry>,
-    watcher: RecommendedWatcher,
-    watcher_rx: Receiver<notify::Result<Event>>,
-    cached_entry_kinds: Arc<RwLock<HashMap<PathBuf, EntryKind>>>,
+    cached_entries: FsWatcherCache<Arc<[PathBuf]>>,
+    cached_entry_kinds: FsWatcherCache<EntryKind>,
 }
 
-struct CachedEntry {
-    rx: Receiver<Option<Vec<PathBuf>>>,
-    entries: Poll<Option<Rc<[PathBuf]>>>,
+struct FsWatcherCache<T> {
+    data: Arc<RwLock<HashMap<PathBuf, T>>>,
+    watcher: RecommendedWatcher,
+}
+
+impl<T: Send + Sync + 'static> Default for FsWatcherCache<T> {
+    fn default() -> Self {
+        let data = Arc::new(RwLock::new(HashMap::new()));
+        Self {
+            data: Arc::clone(&data),
+            watcher: recommended_watcher(move |event: notify::Result<Event>| {
+                let event = event.unwrap();
+                match event.kind {
+                    EventKind::Access(_) => {}
+                    _ => {
+                        for path in event.paths.iter().map(|path| if path.is_dir() { path } else { path.parent().unwrap() }) {
+                            data.write().unwrap().remove(path);
+                        }
+                    }
+                }
+            })
+            .unwrap(),
+        }
+    }
 }
 
 impl Browser {
+    const ENTRY_HEIGHT: f32 = 20.;
+
     pub fn new(theme: Rc<ThemeColors>) -> Self {
-        let (watcher_tx, watcher_rx) = channel();
-        let watcher = recommended_watcher(watcher_tx).unwrap();
         Self {
             selected_category: Category::Files,
             open_paths: vec![PathBuf::from_str("/").unwrap()],
             expanded_paths: Vec::new(),
             preview: {
-                let (path_tx, path_rx) = channel::<PathBuf>();
-                let (file_data_tx, file_data_rx) = channel();
+                let (path_tx, path_rx) = unbounded();
+                let (file_data_tx, file_data_rx) = unbounded();
                 // FIXME: Temporary rodio playback, might need to use cpal or make rodio proper
                 spawn(move || {
                     let (_stream, handle) = OutputStream::try_default().unwrap();
@@ -192,16 +209,19 @@ impl Browser {
                 }
             },
             theme,
-            cached_entries: HashMap::new(),
-            watcher,
-            watcher_rx,
-            cached_entry_kinds: Arc::new(RwLock::new(HashMap::new())),
+            cached_entries: FsWatcherCache::default(),
+            cached_entry_kinds: FsWatcherCache::default(),
         }
     }
 
-    fn entry_kind_of(path: impl AsRef<Path>, cached_entry_kinds: &RwLock<HashMap<PathBuf, EntryKind>>) -> EntryKind {
+    fn entry_kind_of(path: impl AsRef<Path>, cached_entry_kinds: &mut FsWatcherCache<EntryKind>) -> EntryKind {
         let path = path.as_ref();
-        *cached_entry_kinds.write().unwrap().entry(path.to_path_buf()).or_insert_with(|| {
+        *cached_entry_kinds.data.write().unwrap().entry(path.to_path_buf()).or_insert_with(|| {
+            let watch_result = cached_entry_kinds.watcher.watch(path, RecursiveMode::NonRecursive);
+            if let Err(error) = watch_result {
+                error!("Unexpected error while trying to watch directory: {:?}", error);
+            };
+            trace!("entry kind cache miss for {:?}", path);
             if path.is_dir() {
                 EntryKind::Directory
             } else {
@@ -263,118 +283,77 @@ impl Browser {
         }
     }
 
-    fn add_files(&mut self, ui: &mut Ui) -> Response {
+    fn add_files(&mut self, ui: &mut Ui, scroll_area: ScrollArea) -> Response {
         self.handle_file_or_folder_drop(ui.ctx());
-        egui::Frame::default()
-            .inner_margin(Margin::same(8.))
-            .show(ui, |ui| {
-                ui.vertical(|ui| {
-                    ui.visuals_mut().widgets.noninteractive.fg_stroke.color = self.theme.browser_folder_text;
-                    ui.visuals_mut().widgets.hovered.fg_stroke.color = self.theme.browser_folder_hover_text;
-                    ui.style_mut().spacing.item_spacing.x = 4.;
-                    for entry in self.open_paths.iter().fold(Vec::new(), |mut entries, path| {
-                        Self::entries(
-                            &mut entries,
-                            path,
-                            0,
-                            &mut self.cached_entries,
-                            &self.cached_entry_kinds,
-                            &self.expanded_paths,
-                            &self.watcher_rx,
-                            &mut self.watcher,
-                        );
-                        entries
-                    }) {
-                        self.add_entry(entry, ui);
-                    }
-                })
+        let entries = self.open_paths.iter().fold(Vec::new(), |mut entries, path| {
+            Self::entries(&mut entries, path, 0, &mut self.cached_entries, &mut self.cached_entry_kinds, &self.expanded_paths);
+            entries
+        });
+        scroll_area
+            .show_rows(ui, Self::ENTRY_HEIGHT, entries.len(), |ui, row_range| {
+                egui::Frame::default()
+                    .inner_margin(Margin::same(8.))
+                    .show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            ui.visuals_mut().widgets.noninteractive.fg_stroke.color = self.theme.browser_folder_text;
+                            ui.visuals_mut().widgets.hovered.fg_stroke.color = self.theme.browser_folder_hover_text;
+                            ui.style_mut().spacing.item_spacing.x = 4.;
+                            for entry in entries.into_iter().skip(row_range.start).take(row_range.len()) {
+                                self.add_entry(entry, ui);
+                            }
+                        })
+                    })
+                    .response
             })
-            .response
+            .inner
     }
 
-    fn list_cached<'a>(
+    fn list_cached(
         path: &Path,
-        cached_entries: &'a mut HashMap<PathBuf, CachedEntry>,
-        watcher_rx: &Receiver<notify::Result<Event>>,
-        watcher: &mut RecommendedWatcher,
-        cached_entry_kinds: &Arc<RwLock<HashMap<PathBuf, EntryKind>>>,
-    ) -> &'a Poll<Option<Rc<[PathBuf]>>> {
-        match watcher_rx.try_recv() {
-            Ok(event) => {
-                let event = event.unwrap();
-                match event.kind {
-                    EventKind::Access(_) => {}
-                    _ => {
-                        for path in event.paths.iter().map(|path| if path.is_dir() { path } else { path.parent().unwrap() }) {
-                            cached_entries.remove(path);
-                        }
-                    }
-                }
-            }
-            Err(TryRecvError::Disconnected) => {
-                panic!()
-            }
-            Err(TryRecvError::Empty) => {}
-        }
-        let CachedEntry { rx, entries } = cached_entries.entry(path.to_path_buf()).or_insert_with(|| {
-            trace!("entry cache miss for {:?}", path);
-            if let Err(error) = watcher.watch(path, RecursiveMode::NonRecursive) {
+        FsWatcherCache {
+            data: cached_entries,
+            watcher: cached_entries_watcher,
+        }: &mut FsWatcherCache<Arc<[PathBuf]>>,
+        cached_entry_kinds: &mut FsWatcherCache<EntryKind>,
+    ) -> Arc<[PathBuf]> {
+        Arc::clone(cached_entries.write().unwrap().entry(path.to_path_buf()).or_insert_with(|| {
+            trace!("list cache miss for {:?}", path);
+            let watch_result = cached_entries_watcher.watch(path, RecursiveMode::NonRecursive);
+            if let Err(error) = watch_result {
                 error!("Unexpected error while trying to watch directory: {:?}", error);
             }
-            let (tx, rx) = channel();
             let read_dir = read_dir(path);
-            let cached_entry_kinds = Arc::clone(cached_entry_kinds);
-            spawn(move || {
-                tx.send(read_dir.ok().and_then(|entries| {
-                    entries
-                        .map(|entry| {
-                            {
-                                match entry {
-                                    Ok(ref x) => Ok(x),
-                                    Err(x) => Err(x),
-                                }
-                            }
-                            .map(DirEntry::path)
-                        })
-                        .sorted_unstable_by(|a, b| {
-                            let a = a.as_ref().ok();
-                            let b = b.as_ref().ok();
-                            Ord::cmp(
-                                &(a.map(|path| Self::entry_kind_of(path, &cached_entry_kinds)), a),
-                                &(b.map(|path| Self::entry_kind_of(path, &cached_entry_kinds)), b),
-                            )
-                        })
-                        .try_collect()
-                        .ok()
-                }))
-                .unwrap();
-            });
-            CachedEntry { rx, entries: Poll::Pending }
-        });
-        if entries.is_pending() {
-            match rx.try_recv() {
-                Ok(Some(list)) => {
-                    *entries = Poll::Ready(Some(list.into()));
-                }
-                Ok(None) => {
-                    *entries = Poll::Ready(None);
-                }
-                Err(_) => {}
-            }
-        }
-        entries
+            read_dir
+                .unwrap()
+                .map(|entry| {
+                    {
+                        match entry {
+                            Ok(ref x) => Ok(x),
+                            Err(x) => Err(x),
+                        }
+                    }
+                    .map(DirEntry::path)
+                })
+                .sorted_unstable_by(|a, b| {
+                    let a = a.as_ref().ok();
+                    let b = b.as_ref().ok();
+                    Ord::cmp(
+                        &(a.map(|path| Self::entry_kind_of(path, cached_entry_kinds)), a),
+                        &(b.map(|path| Self::entry_kind_of(path, cached_entry_kinds)), b),
+                    )
+                })
+                .try_collect()
+                .unwrap()
+        }))
     }
 
-    #[allow(clippy::too_many_arguments, reason = "borrowing `&mut self` partially is not possible")]
     fn entries(
         entries: &mut Vec<Entry>,
         path: &Path,
         mut depth: usize,
-        cached_entries: &mut HashMap<PathBuf, CachedEntry>,
-        cached_entry_kinds: &Arc<RwLock<HashMap<PathBuf, EntryKind>>>,
+        cached_entries: &mut FsWatcherCache<Arc<[PathBuf]>>,
+        cached_entry_kinds: &mut FsWatcherCache<EntryKind>,
         expanded_paths: &[PathBuf],
-        watcher_rx: &Receiver<notify::Result<Event>>,
-        watcher: &mut RecommendedWatcher,
     ) {
         if depth == 0 {
             entries.push(Entry {
@@ -387,30 +366,27 @@ impl Browser {
             return;
         }
         depth += 1;
-        if let Poll::Ready(Some(list)) = Self::list_cached(path, cached_entries, watcher_rx, watcher, cached_entry_kinds) {
-            for entry in list
-                .iter()
-                .cloned()
-                .sorted_unstable_by(|a, b| Ord::cmp(&(Self::entry_kind_of(a, cached_entry_kinds), a), &(Self::entry_kind_of(b, cached_entry_kinds), b)))
-            {
-                entries.push(Entry {
-                    path: entry.clone(),
-                    kind: Self::entry_kind_of(&entry, cached_entry_kinds),
-                    depth,
-                });
-                if expanded_paths.contains(&entry) {
-                    Self::entries(entries, &entry, depth, cached_entries, cached_entry_kinds, expanded_paths, watcher_rx, watcher);
-                }
+        let list = Arc::clone(&Self::list_cached(path, cached_entries, cached_entry_kinds));
+        for entry in list
+            .iter()
+            .sorted_unstable_by(|a, b| Ord::cmp(&(Self::entry_kind_of(a, cached_entry_kinds), a), &(Self::entry_kind_of(b, cached_entry_kinds), b)))
+        {
+            entries.push(Entry {
+                path: entry.clone(),
+                kind: Self::entry_kind_of(entry, cached_entry_kinds),
+                depth,
+            });
+            if expanded_paths.contains(entry) {
+                Self::entries(entries, entry, depth, cached_entries, cached_entry_kinds, expanded_paths);
             }
         }
     }
 
     fn add_entry(&mut self, entry: Entry, ui: &mut Ui) -> Response {
-        const ENTRY_HEIGHT: f32 = 20.;
         let next_top = ui.next_widget_position().y;
-        let next_bottom = next_top + ENTRY_HEIGHT;
+        let next_bottom = next_top + Self::ENTRY_HEIGHT;
         if next_top >= ui.clip_rect().bottom() || next_bottom <= ui.clip_rect().top() && entry.kind != EntryKind::Directory {
-            return ui.allocate_response(vec2(0.0, ENTRY_HEIGHT), Sense::hover());
+            return ui.allocate_response(vec2(0.0, Self::ENTRY_HEIGHT), Sense::hover());
         }
         let name = entry.path.file_name().map_or_else(|| entry.path.to_string_lossy(), |name| name.to_string_lossy());
         let button = |theme: &ThemeColors| -> Button<'static> {
@@ -423,7 +399,7 @@ impl Browser {
             }))
         };
         let response = ui
-            .allocate_ui(vec2(f32::INFINITY, ENTRY_HEIGHT), |ui| {
+            .allocate_ui(vec2(f32::INFINITY, Self::ENTRY_HEIGHT), |ui| {
                 ui.horizontal(|ui| {
                     const INDENT_SIZE: f32 = 16.;
                     #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
@@ -502,78 +478,6 @@ impl Browser {
         response
     }
 
-    // fn add_directory_contents(&mut self, path: &Path, ui: &mut Ui) -> Option<Response> {
-    //     match self.watcher_rx.try_recv() {
-    //         Ok(event) => {
-    //             let event = event.unwrap();
-    //             match event.kind {
-    //                 EventKind::Access(_) => {}
-    //                 _ => {
-    //                     for path in event.paths.iter().map(|path| if path.is_dir() { path } else { path.parent().unwrap() }) {
-    //                         self.cached_entries.remove(path);
-    //                     }
-    //                 }
-    //             }
-    //         }
-    //         Err(TryRecvError::Disconnected) => {
-    //             panic!()
-    //         }
-    //         Err(TryRecvError::Empty) => {}
-    //     }
-    //     let CachedEntry { rx, entries } = self.cached_entries.entry(path.to_path_buf()).or_insert_with(|| {
-    //         trace!("entry cache miss for {:?}", path);
-    //         if let Err(error) = self.watcher.watch(path, RecursiveMode::NonRecursive) {
-    //             error!("Unexpected error while trying to watch directory: {:?}", error);
-    //         }
-    //         let (tx, rx) = channel();
-    //         let read_dir = read_dir(path);
-    //         let cached_entry_kinds = Arc::clone(&self.cached_entry_kinds);
-    //         spawn(move || {
-    //             tx.send(read_dir.and_then(|entries| {
-    //                 entries
-    //                     .map(|entry| {
-    //                         {
-    //                             match entry {
-    //                                 Ok(ref x) => Ok(x),
-    //                                 Err(x) => Err(x),
-    //                             }
-    //                         }
-    //                         .map(DirEntry::path)
-    //                     })
-    //                     .sorted_unstable_by(|a, b| {
-    //                         let a = a.as_ref().ok();
-    //                         let b = b.as_ref().ok();
-    //                         Ord::cmp(
-    //                             &(a.map(|path| Self::entry_kind_of(path, &cached_entry_kinds)), a),
-    //                             &(b.map(|path| Self::entry_kind_of(path, &cached_entry_kinds)), b),
-    //                         )
-    //                     })
-    //                     .try_collect()
-    //             }))
-    //             .unwrap();
-    //         });
-    //         CachedEntry { rx, entries: None }
-    //     });
-    //     match entries {
-    //         Some(result) => match result {
-    //             Ok(entries) => Rc::clone(entries).iter().map(|path| self.add_entry(path, ui)).reduce(Response::bitor),
-    //             Err(error) => Some(ui.label(format!("Failed to load contents: {error}"))),
-    //         },
-    //         None => match rx.try_recv() {
-    //             Ok(Ok(recv_entries)) => {
-    //                 *entries = Some(Ok(recv_entries.into()));
-    //                 Some(Self::loading(ui))
-    //             }
-    //             Ok(Err(error)) => {
-    //                 *entries = Some(Err(error));
-    //                 None
-    //             }
-    //             Err(TryRecvError::Disconnected) => None,
-    //             Err(TryRecvError::Empty) => Some(Self::loading(ui)),
-    //         },
-    //     }
-    // }
-
     fn handle_file_or_folder_drop(&mut self, ctx: &Context) {
         ctx.input(|input| {
             for path in input.raw.dropped_files.iter().filter_map(|DroppedFile { path, .. }| path.as_deref()) {
@@ -612,23 +516,17 @@ impl Widget for &mut Browser {
                 })
             });
             ui.add_space(4.);
-            ScrollArea::both()
-                .drag_to_scroll(false)
-                .auto_shrink(false)
-                .show_viewport(ui, |ui, _| {
-                    egui::Frame::default().show(ui, |ui| {
-                        ui.vertical(|ui| {
-                            match self.selected_category {
-                                Category::Files => self.add_files(ui),
-                                Category::Devices => {
-                                    // TODO: Show some devices here!
-                                    ui.label("Devices")
-                                }
-                            }
-                        })
-                    })
+            let scroll_area = ScrollArea::both().drag_to_scroll(false).auto_shrink(false);
+            egui::Frame::default()
+                .show(ui, |ui| {
+                    match self.selected_category {
+                        Category::Files => self.add_files(ui, scroll_area),
+                        Category::Devices => {
+                            // TODO: Show some devices here!
+                            ui.label("Devices")
+                        }
+                    }
                 })
-                .inner
                 .response
         })
         .inner

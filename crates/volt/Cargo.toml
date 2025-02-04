@@ -22,3 +22,4 @@ human-panic = "2.0.2"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 notify = "8.0.0"
+crossbeam-channel = "0.5.14"
