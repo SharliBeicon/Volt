@@ -28,6 +28,10 @@ pub struct ThemeColors {
     pub playlist_bar: Color32,
     pub playlist_beat: Color32,
     pub bg_text: Color32,
+    pub command_palette: Color32,
+    pub command_palette_border: Color32,
+    pub command_palette_text: Color32,
+    pub command_palette_placeholder_text: Color32,
 }
 
 impl Default for ThemeColors {
@@ -50,6 +54,10 @@ impl Default for ThemeColors {
             playlist_bar: hex_color!("5e5a75"),
             playlist_beat: hex_color!("2e2b3f"),
             bg_text: hex_color!("646987"),
+            command_palette: hex_color!("1d1b2b"),
+            command_palette_border: hex_color!("3d3b4b"),
+            command_palette_text: hex_color!("928ea7"),
+            command_palette_placeholder_text: hex_color!("928ea740"),
         }
     }
 }
