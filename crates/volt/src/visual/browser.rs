@@ -76,7 +76,7 @@ pub struct Entry {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EntryData {
-    path: PathBuf,
+    path: Arc<Path>,
     kind: EntryKind,
 }
 
@@ -88,15 +88,15 @@ pub enum EntryKind {
 }
 
 pub struct Preview {
-    pub path: Option<PathBuf>,
-    pub path_tx: Sender<PathBuf>,
+    pub path: Option<Arc<Path>>,
+    pub path_tx: Sender<Arc<Path>>,
     pub file_data_rx: Receiver<PreviewData>,
     pub file_data: Option<PreviewData>,
 }
 
 impl Preview {
-    pub fn play_file(&mut self, path: PathBuf) {
-        self.path = Some(path.clone());
+    pub fn play_file(&mut self, path: Arc<Path>) {
+        self.path = Some(Arc::clone(&path));
         self.path_tx.send(path).unwrap();
         self.file_data = None;
     }
@@ -137,7 +137,7 @@ impl PreviewData {
 pub struct Browser {
     selected_category: Category,
     open_paths: Vec<PathBuf>,
-    expanded_paths: Vec<PathBuf>,
+    expanded_paths: Vec<Arc<Path>>,
     preview: Preview,
     theme: Rc<ThemeColors>,
     cached_entries: FsWatcherCache<CachedEntries>,
@@ -145,8 +145,8 @@ pub struct Browser {
 }
 
 struct CachedEntries {
-    rx: Receiver<Vec<(EntryKind, PathBuf)>>,
-    data: Poll<Vec<(EntryKind, PathBuf)>>,
+    rx: Receiver<Vec<(EntryKind, Arc<Path>)>>,
+    data: Poll<Vec<(EntryKind, Arc<Path>)>>,
 }
 
 struct FsWatcherCache<T> {
@@ -155,7 +155,7 @@ struct FsWatcherCache<T> {
     rx: Receiver<notify::Result<Event>>,
 }
 
-impl<T: Send + Sync + 'static> Default for FsWatcherCache<T> {
+impl<T> Default for FsWatcherCache<T> {
     fn default() -> Self {
         let (tx, rx) = unbounded();
 
@@ -352,7 +352,7 @@ impl Browser {
                 let read_dir = read_dir
                     .map(|entry| {
                         let path = entry.unwrap().path();
-                        (Self::entry_kind_of(&path, &mut cached_entry_kinds.write().unwrap()), path)
+                        (Self::entry_kind_of(&path, &mut cached_entry_kinds.write().unwrap()), Arc::from(path.as_path()))
                     })
                     .sorted_unstable()
                     .collect_vec();
@@ -369,18 +369,18 @@ impl Browser {
         mut depth: usize,
         cached_entries: &mut FsWatcherCache<CachedEntries>,
         cached_entry_kinds: &Arc<RwLock<FsWatcherCache<EntryKind>>>,
-        expanded_paths: &[PathBuf],
+        expanded_paths: &[Arc<Path>],
     ) {
         if depth == 0 {
             entries.push(Entry {
                 data: Poll::Ready(EntryData {
-                    path: path.to_path_buf(),
+                    path: Arc::from(path),
                     kind: Self::entry_kind_of(path, &mut cached_entry_kinds.write().unwrap()),
                 }),
                 depth,
             });
         }
-        if !expanded_paths.iter().any(|expanded| expanded == path) {
+        if !expanded_paths.iter().any(|expanded| **expanded == *path) {
             return;
         }
         depth += 1;
@@ -389,11 +389,14 @@ impl Browser {
             Poll::Ready(list) => {
                 for (kind, entry) in list.clone() {
                     entries.push(Entry {
-                        data: Poll::Ready(EntryData { path: PathBuf::new(), kind }),
+                        data: Poll::Ready(EntryData {
+                            path: Arc::from(Path::new("")),
+                            kind,
+                        }),
                         depth,
                     });
                     let len = entries.len();
-                    if expanded_paths.contains(&entry) {
+                    if expanded_paths.iter().any(|expanded| **expanded == *entry) {
                         Self::entries(entries, &entry, depth, cached_entries, cached_entry_kinds, expanded_paths);
                     }
                     match &mut entries[len - 1].data {
@@ -453,7 +456,7 @@ impl Browser {
                         EntryKind::Audio => self.add_audio_entry(&path, ui, &Rc::clone(&self.theme), button),
                         EntryKind::File => Self::add_file(ui, button(&self.theme)),
                         EntryKind::Directory => {
-                            ui.horizontal(|ui| ui.add(self.collapsing_header_icon(f32::from(self.expanded_paths.contains(&path)))) | ui.add(button(&self.theme)))
+                            ui.horizontal(|ui| ui.add(self.collapsing_header_icon(f32::from(self.expanded_paths.iter().any(|expanded| *expanded == path)))) | ui.add(button(&self.theme)))
                                 .inner
                         }
                     }
@@ -466,10 +469,10 @@ impl Browser {
                 EntryKind::Audio => {
                     // TODO: Proper preview implementation with cpal. This is temporary (or at least make it work well with a proper preview widget)
                     // Also, don't spawn a new thread - instead, dedicate a thread for preview
-                    self.preview.play_file(path.clone());
+                    self.preview.play_file(Arc::clone(&path));
                 }
                 EntryKind::File => {
-                    that_detached(path).unwrap();
+                    that_detached(path.as_os_str()).unwrap();
                 }
                 EntryKind::Directory => {
                     if let Some(index) = self.expanded_paths.iter().position(|expanded| expanded == &path) {
@@ -488,7 +491,7 @@ impl Browser {
             ui.horizontal(|ui| {
                 ui.add(Image::new(include_image!("../images/icons/audio.png"))).union(ui.add(button(theme))).pipe(|response| {
                     let data = self.preview.data();
-                    if let Some(data @ PreviewData { length: Some(length), .. }) = self.preview.path.as_ref().filter(|preview_path| *preview_path == path).zip(data).map(|(_, data)| data) {
+                    if let Some(data @ PreviewData { length: Some(length), .. }) = self.preview.path.as_ref().filter(|preview_path| ***preview_path == *path).zip(data).map(|(_, data)| data) {
                         ui.ctx().request_repaint();
                         response
                             | ui.label(format!(
