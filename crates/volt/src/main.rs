@@ -136,6 +136,15 @@ impl App for VoltApp {
                     info::dump();
                     self.notification_drawer.make("Dumped system info into console!".into(), Some(Duration::from_secs(5)));
                 }
+                "bug" => {
+                    println!("!!!!!!\nWhen making your bug report, add the information below!\n!!!!!!");
+                    info::dump();
+                    self.notification_drawer.make("Dumped system info into console! You'll be redirected to the official Volt bug report page in ~3 seconds.".into(), Some(Duration::from_secs(5)));
+                    std::thread::spawn(|| {
+                        std::thread::sleep(Duration::from_secs(3));
+                        info::open_link(info::BUG_REPORT_URL);
+                    });
+                }
                 _ => {}
             }
         }
