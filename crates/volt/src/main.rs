@@ -13,6 +13,7 @@ use info::handle_args;
 // TODO: Move everything into components (visual)
 mod info;
 mod visual;
+mod timings;
 
 use tap::{Pipe, Tap};
 use visual::{browser::Browser, central::Central, navbar::navbar, ThemeColors};
@@ -56,6 +57,7 @@ struct VoltApp {
     pub command_palette_cursor_pos: u32,
     pub command_palette_cursor_pos_end: u32,
     pub command_palette_begin: Duration,
+    pub timings_toggle: bool
 }
 
 impl VoltApp {
@@ -94,6 +96,7 @@ impl VoltApp {
             command_palette_begin: Duration::default(),
             command_palette_cursor_pos: 0,
             command_palette_cursor_pos_end: 0,
+            timings_toggle: false
         }
     }
 }
@@ -108,6 +111,10 @@ fn now() -> f64 {
 impl App for VoltApp {
     #[allow(clippy::too_many_lines, reason = "shut")]
     fn update(&mut self, ctx: &Context, _: &mut eframe::Frame) {
+        let time_render_start = timings::now_ns();
+        // TODO: Move this (the command palette) to its own file. This is here primarily for testing purposes.
+
+        // Keyboard shortcut handler
         if ctx.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::P))) {
             if !self.showing_command_palette {
                 self.command_palette_begin = Duration::from_secs_f64(now());
@@ -115,13 +122,28 @@ impl App for VoltApp {
             self.showing_command_palette = !self.showing_command_palette;
         }
 
+        // Handle queries
+        if ctx.input_mut(|i| i.key_pressed(egui::Key::Enter)) {
+            self.showing_command_palette = false;
+            // TODO: Replace this with a search query implementation rather than direct matching (after moving to palette.rs).
+            match self.command_palette_text.as_str() {
+                "timings" => {
+                    self.timings_toggle = !self.timings_toggle;
+                }
+                _ => {}
+            }
+        }
+
+        // Reset the command palette input
         if !self.showing_command_palette && !self.command_palette_text.is_empty() {
             self.command_palette_cursor_pos = 0;
             self.command_palette_cursor_pos_end = 0;
             self.command_palette_text.clear();
         }
 
+        // Render the command palette and handle logic
         if self.showing_command_palette {
+            // Escaping the command palette
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
                 self.showing_command_palette = false;
             }
@@ -397,6 +419,13 @@ impl App for VoltApp {
         CentralPanel::default().frame(egui::Frame::default().fill(self.theme.central_background)).show(ctx, |ui| {
             ui.add(&mut self.central);
         });
+        let time_render_end = timings::now_ns();
+        let time_render_elapsed = time_render_end - time_render_start;
+        timings::set_render_time(time_render_elapsed);
+
+        if self.timings_toggle {
+            timings::show_timings(ctx, "Timings", 4);
+        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
