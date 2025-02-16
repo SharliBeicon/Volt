@@ -70,9 +70,14 @@ enum_with_array! {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
+    data: Poll<EntryData>,
+    depth: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EntryData {
     path: PathBuf,
     kind: EntryKind,
-    depth: usize,
 }
 
 #[derive(Display, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -359,7 +364,7 @@ impl Browser {
     }
 
     fn entries(
-        entries: &mut Vec<Poll<Entry>>,
+        entries: &mut Vec<Entry>,
         path: &Path,
         mut depth: usize,
         cached_entries: &mut FsWatcherCache<CachedEntries>,
@@ -367,11 +372,13 @@ impl Browser {
         expanded_paths: &[PathBuf],
     ) {
         if depth == 0 {
-            entries.push(Poll::Ready(Entry {
-                path: path.to_path_buf(),
-                kind: Self::entry_kind_of(path, &mut cached_entry_kinds.write().unwrap()),
+            entries.push(Entry {
+                data: Poll::Ready(EntryData {
+                    path: path.to_path_buf(),
+                    kind: Self::entry_kind_of(path, &mut cached_entry_kinds.write().unwrap()),
+                }),
                 depth,
-            }));
+            });
         }
         if !expanded_paths.iter().any(|expanded| expanded == path) {
             return;
@@ -381,13 +388,16 @@ impl Browser {
         match data {
             Poll::Ready(list) => {
                 for (kind, entry) in list.clone() {
-                    entries.push(Poll::Ready(Entry { path: PathBuf::new(), kind, depth }));
+                    entries.push(Entry {
+                        data: Poll::Ready(EntryData { path: PathBuf::new(), kind }),
+                        depth,
+                    });
                     let len = entries.len();
                     if expanded_paths.contains(&entry) {
                         Self::entries(entries, &entry, depth, cached_entries, cached_entry_kinds, expanded_paths);
                     }
-                    match &mut entries[len - 1] {
-                        Poll::Ready(Entry { path, .. }) => *path = entry,
+                    match &mut entries[len - 1].data {
+                        Poll::Ready(EntryData { path, .. }) => *path = entry,
                         Poll::Pending => unreachable!(),
                     };
                 }
@@ -400,22 +410,30 @@ impl Browser {
                     *data = Poll::Ready(Vec::new());
                 }
                 Err(TryRecvError::Empty) => {
-                    entries.push(Poll::Pending);
+                    entries.push(Entry { data: Poll::Pending, depth });
                 }
             },
         }
     }
 
-    fn add_entry(&mut self, entry: Poll<Entry>, ui: &mut Ui) -> Response {
-        let Poll::Ready(entry) = entry else {
-            return Self::loading(ui);
+    fn add_entry(&mut self, Entry { data, depth }: Entry, ui: &mut Ui) -> Response {
+        const INDENT_SIZE: f32 = 16.;
+        let Poll::Ready(EntryData { path, kind }) = data else {
+            return ui
+                .horizontal(|ui| {
+                    #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
+                    #[allow(clippy::cast_precision_loss, reason = "this is a visual effect")]
+                    ui.add_space(INDENT_SIZE * depth as f32);
+                    ui.add(Self::loading);
+                })
+                .response;
         };
         let next_top = ui.next_widget_position().y;
         let next_bottom = next_top + Self::ENTRY_HEIGHT;
-        if next_top >= ui.clip_rect().bottom() || next_bottom <= ui.clip_rect().top() && entry.kind != EntryKind::Directory {
+        if next_top >= ui.clip_rect().bottom() || next_bottom <= ui.clip_rect().top() && kind != EntryKind::Directory {
             return ui.allocate_response(vec2(0.0, Self::ENTRY_HEIGHT), Sense::hover());
         }
-        let name = entry.path.file_name().map_or_else(|| entry.path.to_string_lossy(), |name| name.to_string_lossy());
+        let name = path.file_name().map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
         let button = |theme: &ThemeColors| -> Button<'static> {
             Button::new(RichText::new(name.to_string()).pipe(|text| {
                 if matches!(&name, &Cow::Owned(_)) {
@@ -428,15 +446,14 @@ impl Browser {
         let response = ui
             .allocate_ui(vec2(f32::INFINITY, Self::ENTRY_HEIGHT), |ui| {
                 ui.horizontal(|ui| {
-                    const INDENT_SIZE: f32 = 16.;
                     #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
                     #[allow(clippy::cast_precision_loss, reason = "this is a visual effect")]
-                    ui.add_space(INDENT_SIZE * entry.depth as f32);
-                    match entry.kind {
-                        EntryKind::Audio => self.add_audio_entry(&entry.path, ui, &Rc::clone(&self.theme), button),
+                    ui.add_space(INDENT_SIZE * depth as f32);
+                    match kind {
+                        EntryKind::Audio => self.add_audio_entry(&path, ui, &Rc::clone(&self.theme), button),
                         EntryKind::File => Self::add_file(ui, button(&self.theme)),
                         EntryKind::Directory => {
-                            ui.horizontal(|ui| ui.add(self.collapsing_header_icon(f32::from(self.expanded_paths.contains(&entry.path)))) | ui.add(button(&self.theme)))
+                            ui.horizontal(|ui| ui.add(self.collapsing_header_icon(f32::from(self.expanded_paths.contains(&path)))) | ui.add(button(&self.theme)))
                                 .inner
                         }
                     }
@@ -445,20 +462,20 @@ impl Browser {
             .inner
             .inner;
         if response.clicked() {
-            match entry.kind {
+            match kind {
                 EntryKind::Audio => {
                     // TODO: Proper preview implementation with cpal. This is temporary (or at least make it work well with a proper preview widget)
                     // Also, don't spawn a new thread - instead, dedicate a thread for preview
-                    self.preview.play_file(entry.path.clone());
+                    self.preview.play_file(path.clone());
                 }
                 EntryKind::File => {
-                    that_detached(entry.path).unwrap();
+                    that_detached(path).unwrap();
                 }
                 EntryKind::Directory => {
-                    if let Some(index) = self.expanded_paths.iter().position(|expanded| expanded == &entry.path) {
+                    if let Some(index) = self.expanded_paths.iter().position(|expanded| expanded == &path) {
                         self.expanded_paths.swap_remove(index);
                     } else {
-                        self.expanded_paths.push(entry.path);
+                        self.expanded_paths.push(path);
                     }
                 }
             }
