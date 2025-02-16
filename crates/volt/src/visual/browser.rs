@@ -1,5 +1,3 @@
-// TODO: Rewrite CollapsingHeader and a large part of the browser to be much more optimized. We should only ever call on entries we can actually see.
-
 use blerp::utils::zip;
 use itertools::Itertools;
 use notify::{recommended_watcher, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -17,7 +15,7 @@ use std::{
     rc::Rc,
     str::FromStr,
     string::ToString,
-    sync::{Arc, RwLock},
+    sync::Arc,
     thread::spawn,
     time::{Duration, Instant},
 };
@@ -27,8 +25,8 @@ use tracing::{error, trace};
 
 use egui::{
     emath::{self, TSTransform},
-    include_image, vec2, Button, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, LayerId, Margin, Order, Response, RichText, ScrollArea, Sense, Separator, Shape, Stroke, Ui,
-    UiBuilder, Vec2, Widget,
+    include_image, vec2, Button, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, LayerId, Margin, Order, Response, RichText, ScrollArea, Sense, Separator, Shape, Stroke, Ui, UiBuilder,
+    Vec2, Widget,
 };
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
@@ -141,27 +139,19 @@ pub struct Browser {
 }
 
 struct FsWatcherCache<T> {
-    data: Arc<RwLock<HashMap<PathBuf, T>>>,
+    data: HashMap<PathBuf, T>,
     watcher: RecommendedWatcher,
+    rx: Receiver<notify::Result<Event>>,
 }
 
 impl<T: Send + Sync + 'static> Default for FsWatcherCache<T> {
     fn default() -> Self {
-        let data = Arc::new(RwLock::new(HashMap::new()));
+        let (tx, rx) = unbounded();
+
         Self {
-            data: Arc::clone(&data),
-            watcher: recommended_watcher(move |event: notify::Result<Event>| {
-                let event = event.unwrap();
-                match event.kind {
-                    EventKind::Access(_) => {}
-                    _ => {
-                        for path in event.paths.iter().map(|path| if path.is_dir() { path } else { path.parent().unwrap() }) {
-                            data.write().unwrap().remove(path);
-                        }
-                    }
-                }
-            })
-            .unwrap(),
+            data: HashMap::new(),
+            watcher: recommended_watcher(tx).unwrap(),
+            rx,
         }
     }
 }
@@ -216,7 +206,20 @@ impl Browser {
 
     fn entry_kind_of(path: impl AsRef<Path>, cached_entry_kinds: &mut FsWatcherCache<EntryKind>) -> EntryKind {
         let path = path.as_ref();
-        *cached_entry_kinds.data.write().unwrap().entry(path.to_path_buf()).or_insert_with(|| {
+        for event in cached_entry_kinds.rx.try_iter() {
+            let event = event.unwrap();
+            match event.kind {
+                EventKind::Access(_) => {}
+                _ => {
+                    for path in event.paths.iter().map(|path| if path.is_dir() { path } else { path.parent().unwrap() }) {
+                        trace!("invalidating entry kind cache for {:?}", path);
+                        cached_entry_kinds.data.remove(path);
+                    }
+                }
+            }
+        }
+
+        *cached_entry_kinds.data.entry(path.to_path_buf()).or_insert_with(|| {
             let watch_result = cached_entry_kinds.watcher.watch(path, RecursiveMode::NonRecursive);
             if let Err(error) = watch_result {
                 error!("Unexpected error while trying to watch directory: {:?}", error);
@@ -308,23 +311,31 @@ impl Browser {
             .inner
     }
 
-    fn list_cached(
-        path: &Path,
-        FsWatcherCache {
-            data: cached_entries,
-            watcher: cached_entries_watcher,
-        }: &mut FsWatcherCache<Arc<[PathBuf]>>,
-        cached_entry_kinds: &mut FsWatcherCache<EntryKind>,
-    ) -> Arc<[PathBuf]> {
-        Arc::clone(cached_entries.write().unwrap().entry(path.to_path_buf()).or_insert_with(|| {
+    fn list_cached(path: &Path, cached_entries: &mut FsWatcherCache<Arc<[PathBuf]>>, cached_entry_kinds: &mut FsWatcherCache<EntryKind>) -> Arc<[PathBuf]> {
+        for event in cached_entries.rx.try_iter() {
+            let event = event.unwrap();
+            match event.kind {
+                EventKind::Access(_) => {}
+                _ => {
+                    for path in event.paths.iter().map(|path| if path.is_dir() { path } else { path.parent().unwrap() }) {
+                        trace!("invalidating cached entries cache for {:?}", path);
+                        cached_entries.data.remove(path);
+                    }
+                }
+            }
+        }
+
+        Arc::clone(cached_entries.data.entry(path.to_path_buf()).or_insert_with(|| {
             trace!("list cache miss for {:?}", path);
-            let watch_result = cached_entries_watcher.watch(path, RecursiveMode::NonRecursive);
+            let watch_result = cached_entries.watcher.watch(path, RecursiveMode::NonRecursive);
             if let Err(error) = watch_result {
                 error!("Unexpected error while trying to watch directory: {:?}", error);
             }
-            let read_dir = read_dir(path);
+            let Ok(read_dir) = read_dir(path) else {
+                error!("Failed to read directory: {:?}", path);
+                return Arc::new([]);
+            };
             read_dir
-                .unwrap()
                 .map(|entry| {
                     {
                         match entry {
@@ -367,10 +378,7 @@ impl Browser {
         }
         depth += 1;
         let list = Arc::clone(&Self::list_cached(path, cached_entries, cached_entry_kinds));
-        for entry in list
-            .iter()
-            .sorted_unstable_by(|a, b| Ord::cmp(&(Self::entry_kind_of(a, cached_entry_kinds), a), &(Self::entry_kind_of(b, cached_entry_kinds), b)))
-        {
+        for entry in list.iter() {
             entries.push(Entry {
                 path: entry.clone(),
                 kind: Self::entry_kind_of(entry, cached_entry_kinds),
