@@ -7,6 +7,7 @@ pub mod browser;
 pub mod central;
 pub mod navbar;
 pub mod switch;
+pub mod notification;
 
 // Theming
 #[derive(Debug, PartialEq, Eq)]

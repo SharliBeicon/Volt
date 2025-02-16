@@ -16,7 +16,7 @@ mod visual;
 mod timings;
 
 use tap::{Pipe, Tap};
-use visual::{browser::Browser, central::Central, navbar::navbar, ThemeColors};
+use visual::{browser::Browser, central::Central, navbar::navbar, notification::NotificationDrawer, ThemeColors};
 
 fn main() -> eframe::Result {
     setup_panic!();
@@ -51,6 +51,7 @@ fn main() -> eframe::Result {
 struct VoltApp {
     pub browser: Browser,
     pub central: Central,
+    pub notification_drawer: NotificationDrawer,
     pub theme: Rc<ThemeColors>,
     pub showing_command_palette: bool,
     pub command_palette_text: String,
@@ -90,6 +91,7 @@ impl VoltApp {
         Self {
             browser: Browser::new(Rc::clone(&theme)),
             central: Central::new(),
+            notification_drawer: NotificationDrawer::new(),
             theme,
             showing_command_palette: false,
             command_palette_text: String::new(),
@@ -129,6 +131,10 @@ impl App for VoltApp {
             match self.command_palette_text.as_str() {
                 "timings" => {
                     self.timings_toggle = !self.timings_toggle;
+                }
+                "info" => {
+                    info::dump();
+                    self.notification_drawer.make("Dumped system info into console!".into(), Some(Duration::from_secs(5)));
                 }
                 _ => {}
             }
@@ -420,6 +426,22 @@ impl App for VoltApp {
         CentralPanel::default().frame(egui::Frame::default().fill(self.theme.central_background)).show(ctx, |ui| {
             ui.add(&mut self.central);
         });
+
+        egui::Area::new("notifications_area".into())
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::Vec2::new(ctx.screen_rect().max.x, ctx.screen_rect().max.y))
+            .show(ctx, |ui| {
+                egui::Frame {
+                    inner_margin: egui::Margin::same(0.0),
+                    outer_margin: egui::Margin::same(0.0),
+                    rounding: egui::Rounding::same(0.0),
+                    shadow: Shadow::NONE,
+                    fill: egui::Color32::TRANSPARENT,
+                    stroke: egui::Stroke::NONE,
+                }
+                .show(ui, |ui| {
+                    ui.add(&mut self.notification_drawer);
+                });
+            });
         let time_render_end = timings::now_ns();
         let time_render_elapsed = time_render_end - time_render_start;
         timings::set_render_time(time_render_elapsed);
