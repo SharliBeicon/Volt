@@ -7,7 +7,7 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     f32::consts::FRAC_PI_2,
-    fs::{read_dir, DirEntry, File},
+    fs::{read_dir, File},
     io::BufReader,
     iter::Iterator,
     ops::BitOr,
@@ -15,6 +15,8 @@ use std::{
     rc::Rc,
     str::FromStr,
     string::ToString,
+    sync::{Arc, RwLock},
+    task::Poll,
     thread::spawn,
     time::{Duration, Instant},
 };
@@ -28,7 +30,7 @@ use egui::{
     Vec2, Widget,
 };
 
-use crossbeam_channel::{unbounded, Receiver, Sender};
+use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TryRecvError};
 
 use crate::visual::ThemeColors;
 
@@ -133,8 +135,13 @@ pub struct Browser {
     expanded_paths: Vec<PathBuf>,
     preview: Preview,
     theme: Rc<ThemeColors>,
-    cached_entries: FsWatcherCache<Vec<PathBuf>>,
-    cached_entry_kinds: FsWatcherCache<EntryKind>,
+    cached_entries: FsWatcherCache<CachedEntries>,
+    cached_entry_kinds: Arc<RwLock<FsWatcherCache<EntryKind>>>,
+}
+
+struct CachedEntries {
+    rx: Receiver<Vec<(EntryKind, PathBuf)>>,
+    data: Poll<Vec<(EntryKind, PathBuf)>>,
 }
 
 struct FsWatcherCache<T> {
@@ -199,7 +206,7 @@ impl Browser {
             },
             theme,
             cached_entries: FsWatcherCache::default(),
-            cached_entry_kinds: FsWatcherCache::default(),
+            cached_entry_kinds: Arc::new(RwLock::new(FsWatcherCache::default())),
         }
     }
 
@@ -219,7 +226,7 @@ impl Browser {
         }
 
         *cached_entry_kinds.data.entry(path.to_path_buf()).or_insert_with(|| {
-            let watch_result = cached_entry_kinds.watcher.watch(path, RecursiveMode::NonRecursive);
+            let watch_result = cached_entry_kinds.watcher.watch(path.parent().unwrap_or(path), RecursiveMode::NonRecursive);
             if let Err(error) = watch_result {
                 error!("Unexpected error while trying to watch directory: {:?}", error);
             };
@@ -288,7 +295,7 @@ impl Browser {
     fn add_files(&mut self, ui: &mut Ui, scroll_area: ScrollArea) -> Response {
         self.handle_file_or_folder_drop(ui.ctx());
         let entries = self.open_paths.iter().fold(Vec::new(), |mut entries, path| {
-            Self::entries(&mut entries, path, 0, &mut self.cached_entries, &mut self.cached_entry_kinds, &self.expanded_paths);
+            Self::entries(&mut entries, path, 0, &mut self.cached_entries, &self.cached_entry_kinds, &self.expanded_paths);
             entries
         });
         scroll_area
@@ -310,7 +317,7 @@ impl Browser {
             .inner
     }
 
-    fn list_cached<'a>(path: &Path, cached_entries: &'a mut FsWatcherCache<Vec<PathBuf>>, cached_entry_kinds: &mut FsWatcherCache<EntryKind>) -> &'a Vec<PathBuf> {
+    fn list_cached<'a>(path: &Path, cached_entries: &'a mut FsWatcherCache<CachedEntries>, cached_entry_kinds: &Arc<RwLock<FsWatcherCache<EntryKind>>>) -> &'a mut CachedEntries {
         for event in cached_entries.rx.try_iter() {
             let event = event.unwrap();
             match event.kind {
@@ -326,71 +333,83 @@ impl Browser {
 
         cached_entries.data.entry(path.to_path_buf()).or_insert_with(|| {
             trace!("list cache miss for {:?}", path);
-            let watch_result = cached_entries.watcher.watch(path, RecursiveMode::NonRecursive);
+            let watch_result = cached_entries.watcher.watch(path.parent().unwrap_or(path), RecursiveMode::NonRecursive);
             if let Err(error) = watch_result {
                 error!("Unexpected error while trying to watch directory: {:?}", error);
             }
+            let (tx, rx) = bounded(1);
             let Ok(read_dir) = read_dir(path) else {
                 error!("Failed to read directory: {:?}", path);
-                return Vec::new();
+                return CachedEntries { data: Poll::Ready(Vec::new()), rx };
             };
-            read_dir
-                .map(|entry| {
-                    {
-                        match entry {
-                            Ok(ref x) => Ok(x),
-                            Err(x) => Err(x),
-                        }
-                    }
-                    .map(DirEntry::path)
-                })
-                .sorted_unstable_by(|a, b| {
-                    let a = a.as_ref().ok();
-                    let b = b.as_ref().ok();
-                    Ord::cmp(
-                        &(a.map(|path| Self::entry_kind_of(path, cached_entry_kinds)), a),
-                        &(b.map(|path| Self::entry_kind_of(path, cached_entry_kinds)), b),
-                    )
-                })
-                .try_collect()
-                .unwrap()
+            let cached_entry_kinds = Arc::clone(cached_entry_kinds);
+            spawn(move || {
+                let read_dir = read_dir
+                    .map(|entry| {
+                        let path = entry.unwrap().path();
+                        (Self::entry_kind_of(&path, &mut cached_entry_kinds.write().unwrap()), path)
+                    })
+                    .sorted_unstable()
+                    .collect_vec();
+                tx.send(read_dir).unwrap();
+            });
+
+            CachedEntries { data: Poll::Pending, rx }
         })
     }
 
     fn entries(
-        entries: &mut Vec<Entry>,
+        entries: &mut Vec<Poll<Entry>>,
         path: &Path,
         mut depth: usize,
-        cached_entries: &mut FsWatcherCache<Vec<PathBuf>>,
-        cached_entry_kinds: &mut FsWatcherCache<EntryKind>,
+        cached_entries: &mut FsWatcherCache<CachedEntries>,
+        cached_entry_kinds: &Arc<RwLock<FsWatcherCache<EntryKind>>>,
         expanded_paths: &[PathBuf],
     ) {
         if depth == 0 {
-            entries.push(Entry {
+            entries.push(Poll::Ready(Entry {
                 path: path.to_path_buf(),
-                kind: Self::entry_kind_of(path, cached_entry_kinds),
+                kind: Self::entry_kind_of(path, &mut cached_entry_kinds.write().unwrap()),
                 depth,
-            });
+            }));
         }
         if !expanded_paths.iter().any(|expanded| expanded == path) {
             return;
         }
         depth += 1;
-        for entry in Self::list_cached(path, cached_entries, cached_entry_kinds).clone() {
-            entries.push(Entry {
-                path: PathBuf::new(),
-                kind: Self::entry_kind_of(&entry, cached_entry_kinds),
-                depth,
-            });
-            let len = entries.len();
-            if expanded_paths.contains(&entry) {
-                Self::entries(entries, &entry, depth, cached_entries, cached_entry_kinds, expanded_paths);
+        let CachedEntries { data, rx } = Self::list_cached(path, cached_entries, cached_entry_kinds);
+        match data {
+            Poll::Ready(list) => {
+                for (kind, entry) in list.clone() {
+                    entries.push(Poll::Ready(Entry { path: PathBuf::new(), kind, depth }));
+                    let len = entries.len();
+                    if expanded_paths.contains(&entry) {
+                        Self::entries(entries, &entry, depth, cached_entries, cached_entry_kinds, expanded_paths);
+                    }
+                    match &mut entries[len - 1] {
+                        Poll::Ready(Entry { path, .. }) => *path = entry,
+                        Poll::Pending => unreachable!(),
+                    };
+                }
             }
-            entries[len - 1].path = entry;
+            Poll::Pending => match rx.try_recv() {
+                Ok(list) => {
+                    *data = Poll::Ready(list);
+                }
+                Err(TryRecvError::Disconnected) => {
+                    *data = Poll::Ready(Vec::new());
+                }
+                Err(TryRecvError::Empty) => {
+                    entries.push(Poll::Pending);
+                }
+            },
         }
     }
 
-    fn add_entry(&mut self, entry: Entry, ui: &mut Ui) -> Response {
+    fn add_entry(&mut self, entry: Poll<Entry>, ui: &mut Ui) -> Response {
+        let Poll::Ready(entry) = entry else {
+            return Self::loading(ui);
+        };
         let next_top = ui.next_widget_position().y;
         let next_bottom = next_top + Self::ENTRY_HEIGHT;
         if next_top >= ui.clip_rect().bottom() || next_bottom <= ui.clip_rect().top() && entry.kind != EntryKind::Directory {
