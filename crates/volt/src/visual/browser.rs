@@ -15,7 +15,6 @@ use std::{
     rc::Rc,
     str::FromStr,
     string::ToString,
-    sync::Arc,
     thread::spawn,
     time::{Duration, Instant},
 };
@@ -134,7 +133,7 @@ pub struct Browser {
     expanded_paths: Vec<PathBuf>,
     preview: Preview,
     theme: Rc<ThemeColors>,
-    cached_entries: FsWatcherCache<Arc<[PathBuf]>>,
+    cached_entries: FsWatcherCache<Vec<PathBuf>>,
     cached_entry_kinds: FsWatcherCache<EntryKind>,
 }
 
@@ -311,7 +310,7 @@ impl Browser {
             .inner
     }
 
-    fn list_cached(path: &Path, cached_entries: &mut FsWatcherCache<Arc<[PathBuf]>>, cached_entry_kinds: &mut FsWatcherCache<EntryKind>) -> Arc<[PathBuf]> {
+    fn list_cached<'a>(path: &Path, cached_entries: &'a mut FsWatcherCache<Vec<PathBuf>>, cached_entry_kinds: &mut FsWatcherCache<EntryKind>) -> &'a Vec<PathBuf> {
         for event in cached_entries.rx.try_iter() {
             let event = event.unwrap();
             match event.kind {
@@ -325,7 +324,7 @@ impl Browser {
             }
         }
 
-        Arc::clone(cached_entries.data.entry(path.to_path_buf()).or_insert_with(|| {
+        cached_entries.data.entry(path.to_path_buf()).or_insert_with(|| {
             trace!("list cache miss for {:?}", path);
             let watch_result = cached_entries.watcher.watch(path, RecursiveMode::NonRecursive);
             if let Err(error) = watch_result {
@@ -333,7 +332,7 @@ impl Browser {
             }
             let Ok(read_dir) = read_dir(path) else {
                 error!("Failed to read directory: {:?}", path);
-                return Arc::new([]);
+                return Vec::new();
             };
             read_dir
                 .map(|entry| {
@@ -355,14 +354,14 @@ impl Browser {
                 })
                 .try_collect()
                 .unwrap()
-        }))
+        })
     }
 
     fn entries(
         entries: &mut Vec<Entry>,
         path: &Path,
         mut depth: usize,
-        cached_entries: &mut FsWatcherCache<Arc<[PathBuf]>>,
+        cached_entries: &mut FsWatcherCache<Vec<PathBuf>>,
         cached_entry_kinds: &mut FsWatcherCache<EntryKind>,
         expanded_paths: &[PathBuf],
     ) {
@@ -377,16 +376,17 @@ impl Browser {
             return;
         }
         depth += 1;
-        let list = Arc::clone(&Self::list_cached(path, cached_entries, cached_entry_kinds));
-        for entry in list.iter() {
+        for entry in Self::list_cached(path, cached_entries, cached_entry_kinds).clone() {
             entries.push(Entry {
-                path: entry.clone(),
-                kind: Self::entry_kind_of(entry, cached_entry_kinds),
+                path: PathBuf::new(),
+                kind: Self::entry_kind_of(&entry, cached_entry_kinds),
                 depth,
             });
-            if expanded_paths.contains(entry) {
-                Self::entries(entries, entry, depth, cached_entries, cached_entry_kinds, expanded_paths);
+            let len = entries.len();
+            if expanded_paths.contains(&entry) {
+                Self::entries(entries, &entry, depth, cached_entries, cached_entry_kinds, expanded_paths);
             }
+            entries[len - 1].path = entry;
         }
     }
 
