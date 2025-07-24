@@ -12,6 +12,8 @@ use graph::{Graph, Node, NodeData, NodeId};
 use itertools::Itertools;
 use playlist::{Clip, ClipData, Playlist, Time};
 
+use super::ThemeColors;
+
 mod graph {
     use blerp::processing::effects::Effect;
     use egui::Vec2;
@@ -277,7 +279,7 @@ impl Central {
                             .rev()
                             .map(|y| {
                                 Frame::default()
-                                    .fill(hex_color!("#101010"))
+                                    .fill(ThemeColors::default().central_background)
                                     .show(ui, |ui| {
                                         let (response, painter) = ui.allocate_painter(vec2(f32::INFINITY, playlist.zoom.y), Sense::hover());
                                         if let Some(path) = response.dnd_release_payload::<PathBuf>() {
@@ -302,7 +304,7 @@ impl Central {
                                             let width =
                                                 playlist.duration_of_clip(data).as_secs_f32() * playlist.tempo.bps() as f32 / playlist.time_signature.beats_per_measure as f32 * playlist.zoom.x;
                                             let rect = Rect::from_min_size(pos2(left, painter.clip_rect().top()), vec2(width, painter.clip_rect().height()));
-                                            painter.rect(rect, 4., Color32::RED, Stroke::new(2., Color32::GREEN));
+                                            painter.rect(rect, 4., Color32::GRAY, Stroke::new(2., Color32::DARK_GRAY));
                                             painter.debug_text(
                                                 rect.left_top(),
                                                 Align2::LEFT_TOP,

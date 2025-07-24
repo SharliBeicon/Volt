@@ -1,4 +1,4 @@
-use std::{env::args, fs::File, io::stderr, ops::ControlFlow, path::Path};
+use std::{env::args, fs::File, io::stderr, ops::ControlFlow, path::Path, process::Command};
 
 use tracing::{info, subscriber::set_global_default};
 use tracing_subscriber::{fmt::layer, layer::SubscriberExt, EnvFilter, Registry};
@@ -158,3 +158,25 @@ pub fn handle_args() -> ControlFlow<(), ()> {
 
     ControlFlow::Continue(())
 }
+
+// TODO: Refactor this function for better error handling.
+pub fn open_link(link: &str) {
+    if cfg!(target_os = "windows") {
+        Command::new("cmd")
+            .args(["/C", "start", link])
+            .spawn()
+            .expect("Failed to open link");
+    } else if cfg!(target_os = "macos") {
+        Command::new("open")
+            .arg(link)
+            .spawn()
+            .expect("Failed to open link");
+    } else if cfg!(target_os = "linux") {
+        Command::new("xdg-open")
+            .arg(link)
+            .spawn()
+            .expect("Failed to open link");
+    }
+}
+
+pub const BUG_REPORT_URL: &str = "https://github.com/TheRedXD/Volt/issues/new?template=bug_report.md";

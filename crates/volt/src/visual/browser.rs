@@ -1,41 +1,37 @@
-// TODO: Rewrite CollapsingHeader and a large part of the browser to be much more optimized. We should only ever call on entries we can actually see.
-
 use blerp::utils::zip;
 use itertools::Itertools;
 use notify::{recommended_watcher, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use open::that_detached;
 use rodio::{Decoder, OutputStream, Sink, Source};
+use unicode_truncate::UnicodeTruncateStr;
 use std::{
     borrow::Cow,
-    cell::RefCell,
     collections::HashMap,
-    f32::consts::PI,
-    fs::{read_dir, DirEntry, File},
-    io::{self, BufReader},
+    f32::consts::FRAC_PI_2,
+    fs::{read_dir, File},
+    io::BufReader,
     iter::Iterator,
     ops::BitOr,
     path::{Path, PathBuf},
     rc::Rc,
     str::FromStr,
     string::ToString,
-    sync::{
-        mpsc::{channel, Receiver, Sender, TryRecvError},
-        Arc, RwLock,
-    },
+    sync::{Arc, RwLock},
+    task::Poll,
     thread::spawn,
     time::{Duration, Instant},
 };
 use strum::Display;
-use tap::{Pipe, Tap};
+use tap::Pipe;
 use tracing::{error, trace};
 
 use egui::{
-    emath::{self, TSTransform},
-    include_image, remap, vec2, Button, CollapsingHeader, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, InnerResponse, LayerId, Margin, Order, Rect, Response, RichText, ScrollArea, Sense,
-    Separator, Shape, Stroke, Ui, UiBuilder, Widget,
+    emath::{self, TSTransform}, epaint::text::FontPriority, include_image, vec2, Button, Color32, Context, CursorIcon, DragAndDrop, DroppedFile, FontId, Id, Image, Label, LayerId, Margin, Order, Response, RichText, ScrollArea, Sense, Separator, Shape, Stroke, Ui, UiBuilder, Vec2, Widget
 };
 
-use crate::visual::ThemeColors;
+use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TryRecvError};
+
+use crate::visual::{browser, ThemeColors};
 
 // https://veykril.github.io/tlborm/decl-macros/building-blocks/counting.html#bit-twiddling
 macro_rules! count_tts {
@@ -73,9 +69,14 @@ enum_with_array! {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
-    pub path: PathBuf,
-    pub kind: EntryKind,
-    pub indent: usize,
+    data: Poll<EntryData>,
+    depth: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EntryData {
+    path: Arc<Path>,
+    kind: EntryKind,
 }
 
 #[derive(Display, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -86,15 +87,15 @@ pub enum EntryKind {
 }
 
 pub struct Preview {
-    pub path: Option<PathBuf>,
-    pub path_tx: Sender<PathBuf>,
+    pub path: Option<Arc<Path>>,
+    pub path_tx: Sender<Arc<Path>>,
     pub file_data_rx: Receiver<PreviewData>,
     pub file_data: Option<PreviewData>,
 }
 
 impl Preview {
-    pub fn play_file(&mut self, path: PathBuf) {
-        self.path = Some(path.clone());
+    pub fn play_file(&mut self, path: Arc<Path>) {
+        self.path = Some(Arc::clone(&path));
         self.path_tx.send(path).unwrap();
         self.file_data = None;
     }
@@ -134,35 +135,48 @@ impl PreviewData {
 
 pub struct Browser {
     selected_category: Category,
-    other_category_hovered: bool,
-    open_paths: Rc<RefCell<Vec<PathBuf>>>,
+    open_paths: Vec<PathBuf>,
+    expanded_paths: Vec<Arc<Path>>,
     preview: Preview,
-    hovered_entry: Option<PathBuf>,
     theme: Rc<ThemeColors>,
-    cached_entries: HashMap<PathBuf, CachedEntry>,
-    watcher: RecommendedWatcher,
-    watcher_rx: Receiver<notify::Result<Event>>,
-    cached_entry_kinds: Arc<RwLock<HashMap<PathBuf, EntryKind>>>,
-    collapsing_headers: HashMap<PathBuf, bool>,
+    cached_entries: FsWatcherCache<CachedEntries>,
+    cached_entry_kinds: Arc<RwLock<FsWatcherCache<EntryKind>>>,
 }
 
-struct CachedEntry {
-    rx: Receiver<io::Result<Vec<PathBuf>>>,
-    entries: Option<io::Result<Rc<[PathBuf]>>>,
+struct CachedEntries {
+    rx: Receiver<Vec<(EntryKind, Arc<Path>)>>,
+    data: Poll<Vec<(EntryKind, Arc<Path>)>>,
+}
+
+struct FsWatcherCache<T> {
+    data: HashMap<PathBuf, T>,
+    watcher: RecommendedWatcher,
+    rx: Receiver<notify::Result<Event>>,
+}
+
+impl<T> Default for FsWatcherCache<T> {
+    fn default() -> Self {
+        let (tx, rx) = unbounded();
+
+        Self {
+            data: HashMap::new(),
+            watcher: recommended_watcher(tx).unwrap(),
+            rx,
+        }
+    }
 }
 
 impl Browser {
+    const ENTRY_HEIGHT: f32 = 20.;
+
     pub fn new(theme: Rc<ThemeColors>) -> Self {
-        let (watcher_tx, watcher_rx) = channel();
-        let watcher = recommended_watcher(watcher_tx).unwrap();
         Self {
             selected_category: Category::Files,
-            other_category_hovered: false,
-            collapsing_headers: HashMap::new(),
-            open_paths: Rc::new(RefCell::new(vec![PathBuf::from_str("/").unwrap()])),
+            open_paths: vec![PathBuf::from_str("/").unwrap()],
+            expanded_paths: Vec::new(),
             preview: {
-                let (path_tx, path_rx) = channel::<PathBuf>();
-                let (file_data_tx, file_data_rx) = channel();
+                let (path_tx, path_rx) = unbounded();
+                let (file_data_tx, file_data_rx) = unbounded();
                 // FIXME: Temporary rodio playback, might need to use cpal or make rodio proper
                 spawn(move || {
                     let (_stream, handle) = OutputStream::try_default().unwrap();
@@ -194,23 +208,38 @@ impl Browser {
                     file_data: None,
                 }
             },
-            hovered_entry: None,
             theme,
-            cached_entries: HashMap::new(),
-            watcher,
-            watcher_rx,
-            cached_entry_kinds: Arc::new(RwLock::new(HashMap::new())),
+            cached_entries: FsWatcherCache::default(),
+            cached_entry_kinds: Arc::new(RwLock::new(FsWatcherCache::default())),
         }
     }
 
-    // TODO: Implement EntryKind cache invalidation.
-    fn entry_kind_of(path: impl AsRef<Path>, cached_entry_kinds: &Arc<RwLock<HashMap<PathBuf, EntryKind>>>) -> EntryKind {
+    fn entry_kind_of(path: impl AsRef<Path>, cached_entry_kinds: &mut FsWatcherCache<EntryKind>) -> EntryKind {
         let path = path.as_ref();
-        *cached_entry_kinds.write().unwrap().entry(path.to_path_buf()).or_insert_with(|| {
+        for event in cached_entry_kinds.rx.try_iter() {
+            let event = event.unwrap();
+            match event.kind {
+                EventKind::Access(_) => {}
+                _ => {
+                    for path in event.paths.iter().map(|path| if path.is_dir() { path } else { path.parent().unwrap() }) {
+                        trace!("invalidating entry kind cache for {:?}", path);
+                        cached_entry_kinds.data.remove(path);
+                    }
+                }
+            }
+        }
+
+        *cached_entry_kinds.data.entry(path.to_path_buf()).or_insert_with(|| {
+            let watch_result = cached_entry_kinds.watcher.watch(path.parent().unwrap_or(path), RecursiveMode::NonRecursive);
+            if let Err(error) = watch_result {
+                error!("Unexpected error while trying to watch directory: {:?}", error);
+            };
+            trace!("entry kind cache miss for {:?}", path);
             if path.is_dir() {
                 EntryKind::Directory
             } else {
                 path.extension().and_then(|ext| ext.to_str()).map_or(EntryKind::File, |extension| {
+                    const AUDIO_EXTENSIONS: [&str; 6] = ["flac", "mp3", "ogg", "opus", "wav", "wave"];
                     if AUDIO_EXTENSIONS.into_iter().any(|other| other.eq_ignore_ascii_case(extension)) {
                         EntryKind::Audio
                     } else {
@@ -230,154 +259,267 @@ impl Browser {
     }
 
     // Widgets
-    pub fn button<'a>(theme: &'a ThemeColors, selected: bool, text: &'a str, hovered: bool) -> impl Widget + use<'a> {
+    pub fn button<'a>(theme: &'a ThemeColors, selected: bool, text: &'a str) -> impl Widget + use<'a> {
         move |ui: &mut Ui| {
-            let color = if selected {
-                theme.browser_selected_button_fg
-            } else if hovered {
-                theme.browser_unselected_hover_button_fg
-            } else {
-                theme.browser_unselected_button_fg
-            };
-            ui.allocate_ui(vec2(0., 24.), |ui| {
-                let button = ui.centered_and_justified(|ui| Button::new(RichText::new(text).size(14.).color(color)).frame(false).ui(ui)).inner;
-                ui.visuals_mut().widgets.noninteractive.bg_stroke.color = color;
-                ui.add(Separator::default().spacing(0.));
+            ui.allocate_ui(vec2(0., 16.), |ui| {
+                ui.visuals_mut().widgets.inactive.fg_stroke.color = theme.browser_unselected_button_fg;
+                ui.visuals_mut().widgets.hovered.fg_stroke.color = theme.browser_unselected_hover_button_fg;
+                let button = ui
+                    .centered_and_justified(|ui| Button::new(RichText::new(text).size(14.).pipe(|text| if selected { text.color(theme.browser_selected_button_fg) } else { text })).ui(ui))
+                    .inner;
+                ui.visuals_mut().widgets.noninteractive.bg_stroke.color = if selected {
+                    theme.browser_selected_button_fg
+                } else if button.hovered() {
+                    theme.browser_unselected_hover_button_fg
+                } else {
+                    theme.browser_unselected_button_fg
+                };
+                ui.add(Separator::default().shrink(10.).spacing(0.));
                 button
             })
             .inner
         }
     }
 
-    pub fn collapsing_header_icon(ui: &Ui, theme: &Rc<ThemeColors>, path: &Path, hovered_entry: Option<&Path>, openness: f32, response: &Response) {
-        let visuals = ui.style().interact(response);
-        let rect = Rect::from_center_size(response.rect.center(), response.rect.size() * 0.75).expand(visuals.expansion);
-        let mut points = vec![rect.left_top(), rect.right_top(), rect.center_bottom()];
-        let rotation = emath::Rot2::from_angle(remap(openness, 0. ..=1., -PI / 2. ..=0.));
-        for p in &mut points {
-            *p = rect.center() + rotation * (*p - rect.center());
+    pub fn collapsing_header_icon(&self, openness: f32) -> impl Widget + use<'_> {
+        move |ui: &mut Ui| {
+            ui.allocate_painter(Vec2::splat(ui.available_height()), Sense::hover()).pipe(|(response, painter)| {
+                let rect = response.rect.shrink(6.);
+                let mut points = vec![rect.left_top(), rect.right_top(), rect.center_bottom()];
+                let rotation = emath::Rot2::from_angle((openness - 1.) * FRAC_PI_2);
+                for p in &mut points {
+                    *p = rect.center() + rotation * (*p - rect.center());
+                }
+                painter.add(Shape::convex_polygon(points, self.theme.browser_folder_text, Stroke::NONE));
+                response
+            })
         }
-
-        ui.painter().add(Shape::convex_polygon(
-            points,
-            if Some(path) == hovered_entry {
-                theme.browser_folder_hover_text
-            } else {
-                theme.browser_folder_text
-            },
-            Stroke::NONE,
-        ));
     }
 
-    fn add_files(&mut self, ui: &mut Ui) -> Response {
+    fn add_files(&mut self, ui: &mut Ui, scroll_area: ScrollArea, browser_width: f32) -> Response {
         self.handle_file_or_folder_drop(ui.ctx());
-        egui::Frame::default()
-            .inner_margin(Margin::same(8.))
-            .show(ui, |ui| {
-                ui.vertical(|ui| {
-                    for path in Rc::clone(&self.open_paths).borrow().iter() {
-                        self.add_entry(path, ui);
+        let entries = self.open_paths.iter().fold(Vec::new(), |mut entries, path| {
+            Self::entries(&mut entries, path, 0, &mut self.cached_entries, &self.cached_entry_kinds, &self.expanded_paths);
+            entries
+        });
+        scroll_area
+            .show_rows(ui, Self::ENTRY_HEIGHT, entries.len(), |ui, row_range| {
+                egui::Frame::default()
+                    .inner_margin(Margin::same(8.))
+                    .show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            ui.visuals_mut().widgets.noninteractive.fg_stroke.color = self.theme.browser_folder_text;
+                            ui.visuals_mut().widgets.hovered.fg_stroke.color = self.theme.browser_folder_hover_text;
+                            ui.style_mut().spacing.item_spacing.x = 4.;
+                            let entries_iter = entries.into_iter();
+                            for entry in entries_iter.skip(row_range.start).take(row_range.len()+8) {
+                                self.add_entry(entry, ui, browser_width);
+                            }
+                        })
+                    })
+                    .response
+            })
+            .inner
+    }
+
+    fn list_cached<'a>(path: &Path, cached_entries: &'a mut FsWatcherCache<CachedEntries>, cached_entry_kinds: &Arc<RwLock<FsWatcherCache<EntryKind>>>) -> &'a mut CachedEntries {
+        for event in cached_entries.rx.try_iter() {
+            let event = event.unwrap();
+            match event.kind {
+                EventKind::Access(_) => {}
+                _ => {
+                    for path in event.paths.iter().map(|path| if path.is_dir() { path } else { path.parent().unwrap() }) {
+                        trace!("invalidating cached entries cache for {:?}", path);
+                        cached_entries.data.remove(path);
+                    }
+                }
+            }
+        }
+
+        cached_entries.data.entry(path.to_path_buf()).or_insert_with(|| {
+            trace!("list cache miss for {:?}", path);
+            let watch_result = cached_entries.watcher.watch(path.parent().unwrap_or(path), RecursiveMode::NonRecursive);
+            if let Err(error) = watch_result {
+                error!("Unexpected error while trying to watch directory: {:?}", error);
+            }
+            let (tx, rx) = bounded(1);
+            let Ok(read_dir) = read_dir(path) else {
+                error!("Failed to read directory: {:?}", path);
+                return CachedEntries { data: Poll::Ready(Vec::new()), rx };
+            };
+            let cached_entry_kinds = Arc::clone(cached_entry_kinds);
+            spawn(move || {
+                let read_dir = read_dir
+                    .map(|entry| {
+                        let path = entry.unwrap().path();
+                        (Self::entry_kind_of(&path, &mut cached_entry_kinds.write().unwrap()), Arc::from(path.as_path()))
+                    })
+                    .sorted_unstable()
+                    .collect_vec();
+                tx.send(read_dir).unwrap();
+            });
+
+            CachedEntries { data: Poll::Pending, rx }
+        })
+    }
+
+    fn entries(
+        entries: &mut Vec<Entry>,
+        path: &Path,
+        mut depth: usize,
+        cached_entries: &mut FsWatcherCache<CachedEntries>,
+        cached_entry_kinds: &Arc<RwLock<FsWatcherCache<EntryKind>>>,
+        expanded_paths: &[Arc<Path>],
+    ) {
+        if depth == 0 {
+            entries.push(Entry {
+                data: Poll::Ready(EntryData {
+                    path: Arc::from(path),
+                    kind: Self::entry_kind_of(path, &mut cached_entry_kinds.write().unwrap()),
+                }),
+                depth,
+            });
+        }
+        if !expanded_paths.iter().any(|expanded| **expanded == *path) {
+            return;
+        }
+        depth += 1;
+        let CachedEntries { data, rx } = Self::list_cached(path, cached_entries, cached_entry_kinds);
+        match data {
+            Poll::Ready(list) => {
+                for (kind, entry) in list.clone() {
+                    entries.push(Entry {
+                        data: Poll::Ready(EntryData { path: Arc::from(Path::new("")), kind }),
+                        depth,
+                    });
+                    let len = entries.len();
+                    if expanded_paths.iter().any(|expanded| **expanded == *entry) {
+                        Self::entries(entries, &entry, depth, cached_entries, cached_entry_kinds, expanded_paths);
+                    }
+                    match &mut entries[len - 1].data {
+                        Poll::Ready(EntryData { path, .. }) => *path = entry,
+                        Poll::Pending => unreachable!(),
+                    };
+                }
+            }
+            Poll::Pending => match rx.try_recv() {
+                Ok(list) => {
+                    *data = Poll::Ready(list);
+                }
+                Err(TryRecvError::Disconnected) => {
+                    *data = Poll::Ready(Vec::new());
+                }
+                Err(TryRecvError::Empty) => {
+                    entries.push(Entry { data: Poll::Pending, depth });
+                }
+            },
+        }
+    }
+
+    fn add_entry(&mut self, Entry { data, depth }: Entry, ui: &mut Ui, browser_width: f32) -> Response {
+        const INDENT_SIZE: f32 = 16.;
+        let Poll::Ready(EntryData { path, kind }) = data else {
+            return ui
+                .horizontal(|ui| {
+                    #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
+                    #[allow(clippy::cast_precision_loss, reason = "this is a visual effect")]
+                    ui.add_space(INDENT_SIZE * depth as f32);
+                    ui.add(Self::loading);
+                })
+                .response;
+        };
+        let next_top = ui.next_widget_position().y;
+        let next_bottom = next_top + Self::ENTRY_HEIGHT;
+        if next_top >= ui.clip_rect().bottom() || next_bottom <= ui.clip_rect().top() && kind != EntryKind::Directory {
+            return ui.allocate_response(vec2(0.0, Self::ENTRY_HEIGHT), Sense::hover());
+        }
+        let name = path.file_name().map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
+        let full_width = ui.painter().layout(name.to_string(), FontId::proportional(12.), Color32::WHITE, f32::INFINITY).size().x;
+        let char_length = name.to_string().len();
+        let mut final_char_length = char_length;
+        let mut final_text = name.to_string();
+        let available_width = browser_width - 30. - (INDENT_SIZE * depth as f32);
+        if full_width > available_width {
+            for i in char_length..0 {
+                let string = name.to_string();
+                let text = string.unicode_truncate(i).0;
+                let width = ui.painter().layout(text.to_string(), FontId::proportional(12.), Color32::WHITE, f32::INFINITY).size().x;
+                if width <= available_width {
+                    final_char_length = i;
+                    break;
+                }
+            }
+            // final_text = format!("{}{}", final_text.unicode_truncate(usize::max(final_char_length, 3)-3).0, "...");
+            final_text = final_text.unicode_truncate(final_char_length).0.to_string();
+        }
+        let button = |theme: &ThemeColors| -> Button<'static> {
+            Button::new(RichText::new(final_text.clone()).font(FontId::proportional(12.)).pipe(|text| {
+                if matches!(&name, &Cow::Owned(_)) {
+                    text.color(theme.browser_unselected_button_fg_invalid)
+                } else {
+                    text
+                }
+            }))
+        };
+        let response = ui
+            .allocate_ui(vec2(f32::INFINITY, Self::ENTRY_HEIGHT), |ui| {
+                ui.horizontal(|ui| {
+                    #[allow(clippy::cast_possible_truncation, reason = "this is a visual effect")]
+                    #[allow(clippy::cast_precision_loss, reason = "this is a visual effect")]
+                    ui.add_space(INDENT_SIZE * depth as f32);
+                    match kind {
+                        EntryKind::Audio => self.add_audio_entry(&path, ui, &Rc::clone(&self.theme), button),
+                        EntryKind::File => Self::add_file(ui, button(&self.theme)),
+                        EntryKind::Directory => {
+                            ui.horizontal(|ui| ui.add(self.collapsing_header_icon(f32::from(self.expanded_paths.iter().any(|expanded| *expanded == path)))) | ui.add(button(&self.theme)))
+                                .inner
+                        }
                     }
                 })
             })
-            .response
-    }
-
-    fn add_entry(&mut self, path: &Path, ui: &mut Ui) -> Response {
-        const ENTRY_HEIGHT: f32 = 20.;
-        let next_top = ui.next_widget_position().y;
-        let next_bottom = next_top + ENTRY_HEIGHT;
-        let kind = Self::entry_kind_of(path, &self.cached_entry_kinds);
-        if next_top >= ui.clip_rect().bottom() || next_bottom <= ui.clip_rect().top() && kind != EntryKind::Directory {
-            return ui.allocate_response(vec2(0.0, ENTRY_HEIGHT), Sense::hover());
-        }
-        let name = path.file_name().map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
-        let button = |hovered_entry: &Option<PathBuf>, theme: &Rc<ThemeColors>| {
-            Button::new(RichText::new(&*name).color(match (Some(path) == hovered_entry.as_deref(), matches!(&name, &Cow::Owned(_))) {
-                (true, true) => theme.browser_unselected_hover_button_fg_invalid,
-                (true, false) => theme.browser_unselected_hover_button_fg,
-                (false, true) => theme.browser_unselected_button_fg_invalid,
-                (false, false) => theme.browser_unselected_button_fg,
-            }))
-            .frame(false)
-        };
-        let response = ui
-            .allocate_ui(vec2(0., ENTRY_HEIGHT), |ui| {
-                let response = match kind {
-                    EntryKind::Audio => self.add_audio_entry(path, ui, button),
-                    EntryKind::File => Self::add_file(ui, button(&self.hovered_entry, &self.theme)),
-                    EntryKind::Directory => {
-                        let response = CollapsingHeader::new(RichText::new(name.clone()).color(if Some(path) == self.hovered_entry.as_deref() {
-                            self.theme.browser_folder_hover_text
-                        } else {
-                            self.theme.browser_folder_text
-                        }))
-                        .id_salt(path)
-                        .icon({
-                            let theme = Rc::clone(&self.theme);
-                            let hovered_entry = self.hovered_entry.clone();
-                            let path = path.to_path_buf();
-                            move |ui, openness, response| {
-                                Self::collapsing_header_icon(ui, &theme, &path, hovered_entry.as_deref(), openness, response);
-                            }
-                        })
-                        .show(ui, |ui| {
-                            self.add_directory_contents(path, ui);
-                        });
-                        self.collapsing_headers.insert(path.to_path_buf(), response.body_response.is_some());
-                        response.header_response
-                    }
-                };
-                ui.allocate_space(ui.available_size());
-                response
-            })
-            .response
-            .on_hover_cursor(CursorIcon::PointingHand);
+            .inner
+            .inner;
         if response.clicked() {
             match kind {
                 EntryKind::Audio => {
                     // TODO: Proper preview implementation with cpal. This is temporary (or at least make it work well with a proper preview widget)
                     // Also, don't spawn a new thread - instead, dedicate a thread for preview
-                    self.preview.play_file(path.to_path_buf());
+                    self.preview.play_file(Arc::clone(&path));
                 }
                 EntryKind::File => {
-                    that_detached(path).unwrap();
+                    that_detached(path.as_os_str()).unwrap();
                 }
-                EntryKind::Directory => {}
-            }
-        }
-        if response.hovered() {
-            self.hovered_entry = Some(path.to_path_buf());
-        } else {
-            let mut path_buf = PathBuf::new();
-            path_buf.push(Path::new(""));
-            if self.hovered_entry.as_ref().unwrap_or(&path_buf).to_str().unwrap_or_default() == path.to_path_buf().to_str().unwrap_or_default() {
-                self.hovered_entry = None;
+                EntryKind::Directory => {
+                    if let Some(index) = self.expanded_paths.iter().position(|expanded| expanded == &path) {
+                        self.expanded_paths.swap_remove(index);
+                    } else {
+                        self.expanded_paths.push(path);
+                    }
+                }
             }
         }
         response
     }
 
-    fn add_audio_entry(&mut self, path: &Path, ui: &mut Ui, button: impl Fn(&Option<PathBuf>, &Rc<ThemeColors>) -> Button<'static>) -> Response {
+    fn add_audio_entry(&mut self, path: &Path, ui: &mut Ui, theme: &Rc<ThemeColors>, button: impl Fn(&ThemeColors) -> Button<'static>) -> Response {
         let mut add_contents = |ui: &mut Ui| {
             ui.horizontal(|ui| {
-                ui.add(Image::new(include_image!("../images/icons/audio.png")))
-                    .union(ui.add(button(&self.hovered_entry, &self.theme)))
-                    .pipe(|response| {
-                        let data = self.preview.data();
-                        if let Some(data @ PreviewData { length: Some(length), .. }) = self.preview.path.as_ref().filter(|preview_path| *preview_path == path).zip(data).map(|(_, data)| data) {
-                            ui.ctx().request_repaint();
-                            response.union(ui.label(format!(
+                ui.add(Image::new(include_image!("../images/icons/audio.png"))).union(ui.add(button(theme))).pipe(|response| {
+                    let data = self.preview.data();
+                    if let Some(data @ PreviewData { length: Some(length), .. }) = self.preview.path.as_ref().filter(|preview_path| ***preview_path == *path).zip(data).map(|(_, data)| data) {
+                        ui.ctx().request_repaint();
+                        response
+                            | ui.label(format!(
                                 "{:>02}:{:>02} of {:>02}:{:>02}",
                                 data.progress().as_secs() / 60,
                                 data.progress().as_secs() % 60,
                                 length.as_secs() / 60,
                                 length.as_secs() % 60
-                            )))
-                        } else {
-                            response
-                        }
-                    })
+                            ))
+                    } else {
+                        response
+                    }
+                })
             })
         };
         let mut response = if ui.ctx().is_being_dragged(Id::new(path.to_owned())) {
@@ -398,96 +540,26 @@ impl Browser {
         response
     }
 
-    fn add_directory_contents(&mut self, path: &Path, ui: &mut Ui) -> Option<Response> {
-        match self.watcher_rx.try_recv() {
-            Ok(event) => {
-                let event = event.unwrap();
-                match event.kind {
-                    EventKind::Access(_) => {}
-                    _ => {
-                        for path in event.paths.iter().map(|path| if path.is_dir() { path } else { path.parent().unwrap() }) {
-                            self.cached_entries.remove(path);
-                        }
-                    }
-                }
-            }
-            Err(TryRecvError::Disconnected) => {
-                panic!()
-            }
-            Err(TryRecvError::Empty) => {}
-        }
-        let CachedEntry { rx, entries } = self.cached_entries.entry(path.to_path_buf()).or_insert_with(|| {
-            trace!("entry cache miss for {:?}", path);
-            if let Err(error) = self.watcher.watch(path, RecursiveMode::NonRecursive) {
-                error!("Unexpected error while trying to watch directory: {:?}", error);
-            }
-            let (tx, rx) = channel();
-            let read_dir = read_dir(path);
-            let cached_entry_kinds = Arc::clone(&self.cached_entry_kinds);
-            spawn(move || {
-                tx.send(read_dir.and_then(|entries| {
-                    entries
-                        .map(|entry| {
-                            {
-                                match entry {
-                                    Ok(ref x) => Ok(x),
-                                    Err(x) => Err(x),
-                                }
-                            }
-                            .map(DirEntry::path)
-                        })
-                        .sorted_unstable_by(|a, b| {
-                            let a = a.as_ref().ok();
-                            let b = b.as_ref().ok();
-                            Ord::cmp(
-                                &(a.map(|path| Self::entry_kind_of(path, &cached_entry_kinds)), a),
-                                &(b.map(|path| Self::entry_kind_of(path, &cached_entry_kinds)), b),
-                            )
-                        })
-                        .try_collect()
-                }))
-                .unwrap();
-            });
-            CachedEntry { rx, entries: None }
-        });
-        match entries {
-            Some(result) => match result {
-                Ok(entries) => Rc::clone(entries).iter().map(|path| self.add_entry(path, ui)).reduce(Response::bitor),
-                Err(error) => Some(ui.label(format!("Failed to load contents: {error}"))),
-            },
-            None => match rx.try_recv() {
-                Ok(Ok(recv_entries)) => {
-                    *entries = Some(Ok(recv_entries.into()));
-                    Some(Self::loading(ui))
-                }
-                Ok(Err(error)) => {
-                    *entries = Some(Err(error));
-                    None
-                }
-                Err(TryRecvError::Disconnected) => None,
-                Err(TryRecvError::Empty) => Some(Self::loading(ui)),
-            },
-        }
-    }
-
-    fn handle_file_or_folder_drop(&self, ctx: &Context) {
+    fn handle_file_or_folder_drop(&mut self, ctx: &Context) {
         ctx.input(|input| {
             for path in input.raw.dropped_files.iter().filter_map(|DroppedFile { path, .. }| path.as_deref()) {
-                self.open_paths.borrow_mut().push(path.to_path_buf());
+                self.open_paths.push(path.to_path_buf());
             }
         });
     }
 
     fn add_file(ui: &mut Ui, button: Button<'_>) -> Response {
-        let InnerResponse { inner, response } = ui.horizontal(|ui| ui.add(Image::new(include_image!("../images/icons/file.png"))).union(ui.add(button)));
-        inner | response
+        ui.horizontal(|ui| ui.add(Image::new(include_image!("../images/icons/file.png"))) | (ui.add(button))).inner
     }
 }
 
 impl Widget for &mut Browser {
     fn ui(self, ui: &mut Ui) -> Response {
         ui.add_space(6.);
+        let browser_width = ui.available_width();
         ui.vertical(|ui| {
+            ui.visuals_mut().button_frame = false;
+            ui.visuals_mut().interact_cursor = Some(CursorIcon::PointingHand);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 16.;
                 ui.columns_const(|uis| {
@@ -495,11 +567,7 @@ impl Widget for &mut Browser {
                         .map(|(category, ui)| {
                             let selected = self.selected_category == category;
                             let string = category.to_string();
-                            let mut response = ui.add(Browser::button(&self.theme, selected, &string, self.other_category_hovered));
-                            if !selected {
-                                response = response.on_hover_cursor(CursorIcon::PointingHand);
-                                self.other_category_hovered = response.hovered();
-                            }
+                            let response = ui.add(Browser::button(&self.theme, selected, &string));
                             if response.clicked() {
                                 self.selected_category = category;
                             }
@@ -511,27 +579,26 @@ impl Widget for &mut Browser {
                 })
             });
             ui.add_space(4.);
-            ScrollArea::both()
+            ui.visuals_mut().extreme_bg_color = Color32::from_hex("#7676a340").unwrap();
+            // ui.style_mut().spacing.scroll.floating = false;
+            let scroll_area = ScrollArea::both()
                 .drag_to_scroll(false)
                 .auto_shrink(false)
-                .show_viewport(ui, |ui, _| {
-                    egui::Frame::default().show(ui, |ui| {
-                        ui.vertical(|ui| {
-                            match self.selected_category {
-                                Category::Files => self.add_files(ui),
-                                Category::Devices => {
-                                    // TODO: Show some devices here!
-                                    ui.label("Devices")
-                                }
-                            }
-                        })
-                    })
+                // .hscroll(false)
+                .max_width(ui.available_width() - 6.)
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded);
+            egui::Frame::default()
+                .show(ui, |ui| {
+                    match self.selected_category {
+                        Category::Files => self.add_files(ui, scroll_area, browser_width),
+                        Category::Devices => {
+                            // TODO: Show some devices here!
+                            ui.label("Devices")
+                        }
+                    }
                 })
-                .inner
                 .response
         })
         .inner
     }
 }
-
-const AUDIO_EXTENSIONS: [&str; 6] = ["flac", "mp3", "ogg", "opus", "wav", "wave"];

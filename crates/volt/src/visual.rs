@@ -7,6 +7,9 @@ pub mod browser;
 pub mod central;
 pub mod navbar;
 pub mod switch;
+pub mod notification;
+pub mod dialog;
+pub mod status;
 
 // Theming
 #[derive(Debug, PartialEq, Eq)]
@@ -14,6 +17,7 @@ pub struct ThemeColors {
     pub navbar_background_gradient_top: Color32,
     pub navbar_background_gradient_bottom: Color32,
     pub navbar_outline: Color32,
+    pub navbar_widget: Color32,
     pub central_background: Color32,
     pub browser: Color32,
     pub browser_outline: Color32,
@@ -28,16 +32,21 @@ pub struct ThemeColors {
     pub playlist_bar: Color32,
     pub playlist_beat: Color32,
     pub bg_text: Color32,
+    pub command_palette: Color32,
+    pub command_palette_border: Color32,
+    pub command_palette_text: Color32,
+    pub command_palette_placeholder_text: Color32,
 }
 
 impl Default for ThemeColors {
     fn default() -> Self {
         Self {
-            navbar_background_gradient_top: hex_color!("2c2b47"),
-            navbar_background_gradient_bottom: hex_color!("221f31"),
+            navbar_background_gradient_top: hex_color!("1e2132"),
+            navbar_background_gradient_bottom: hex_color!("171825"),
             navbar_outline: hex_color!("453f67"),
-            central_background: hex_color!("1c1b2b"),
-            browser: hex_color!("1d1b2b"),
+            navbar_widget: hex_color!("07081580"),
+            central_background: hex_color!("171825"),
+            browser: hex_color!("171825"),
             browser_outline: hex_color!("28243e"),
             browser_selected_button_fg: hex_color!("ffcf7b"),
             browser_unselected_button_fg: hex_color!("646d88"),
@@ -50,6 +59,10 @@ impl Default for ThemeColors {
             playlist_bar: hex_color!("5e5a75"),
             playlist_beat: hex_color!("2e2b3f"),
             bg_text: hex_color!("646987"),
+            command_palette: hex_color!("1d1b2b"),
+            command_palette_border: hex_color!("3d3b4b"),
+            command_palette_text: hex_color!("928ea7"),
+            command_palette_placeholder_text: hex_color!("928ea740"),
         }
     }
 }
