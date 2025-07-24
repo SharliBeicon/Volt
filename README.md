@@ -1,4 +1,5 @@
 # Volt DAW
+![Volt DAW Banner](https://fs.infra.thered.sh/branding/volt/volt-banner.png)
 
 Volt is a custom DAW (digital audio workstation) that is primarily aimed at Linux and will be open-source. It uses eframe+egui for rendering, likely cpal for playback.
 It will have its own .wav implementation to integrate nicely with the rest of the DAW (as it is the most widely used format in music production), and other formats will use libraries for compatibility.
