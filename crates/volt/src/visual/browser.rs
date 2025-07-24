@@ -3,6 +3,7 @@ use itertools::Itertools;
 use notify::{recommended_watcher, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use open::that_detached;
 use rodio::{Decoder, OutputStream, Sink, Source};
+use unicode_truncate::UnicodeTruncateStr;
 use std::{
     borrow::Cow,
     collections::HashMap,
@@ -25,14 +26,12 @@ use tap::Pipe;
 use tracing::{error, trace};
 
 use egui::{
-    emath::{self, TSTransform},
-    include_image, vec2, Button, Context, CursorIcon, DragAndDrop, DroppedFile, Id, Image, LayerId, Margin, Order, Response, RichText, ScrollArea, Sense, Separator, Shape, Stroke, Ui, UiBuilder,
-    Vec2, Widget,
+    emath::{self, TSTransform}, epaint::text::FontPriority, include_image, vec2, Button, Color32, Context, CursorIcon, DragAndDrop, DroppedFile, FontId, Id, Image, Label, LayerId, Margin, Order, Response, RichText, ScrollArea, Sense, Separator, Shape, Stroke, Ui, UiBuilder, Vec2, Widget
 };
 
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TryRecvError};
 
-use crate::visual::ThemeColors;
+use crate::visual::{browser, ThemeColors};
 
 // https://veykril.github.io/tlborm/decl-macros/building-blocks/counting.html#bit-twiddling
 macro_rules! count_tts {
@@ -262,7 +261,7 @@ impl Browser {
     // Widgets
     pub fn button<'a>(theme: &'a ThemeColors, selected: bool, text: &'a str) -> impl Widget + use<'a> {
         move |ui: &mut Ui| {
-            ui.allocate_ui(vec2(0., 24.), |ui| {
+            ui.allocate_ui(vec2(0., 16.), |ui| {
                 ui.visuals_mut().widgets.inactive.fg_stroke.color = theme.browser_unselected_button_fg;
                 ui.visuals_mut().widgets.hovered.fg_stroke.color = theme.browser_unselected_hover_button_fg;
                 let button = ui
@@ -275,7 +274,7 @@ impl Browser {
                 } else {
                     theme.browser_unselected_button_fg
                 };
-                ui.add(Separator::default().spacing(0.));
+                ui.add(Separator::default().shrink(10.).spacing(0.));
                 button
             })
             .inner
@@ -297,7 +296,7 @@ impl Browser {
         }
     }
 
-    fn add_files(&mut self, ui: &mut Ui, scroll_area: ScrollArea) -> Response {
+    fn add_files(&mut self, ui: &mut Ui, scroll_area: ScrollArea, browser_width: f32) -> Response {
         self.handle_file_or_folder_drop(ui.ctx());
         let entries = self.open_paths.iter().fold(Vec::new(), |mut entries, path| {
             Self::entries(&mut entries, path, 0, &mut self.cached_entries, &self.cached_entry_kinds, &self.expanded_paths);
@@ -312,8 +311,9 @@ impl Browser {
                             ui.visuals_mut().widgets.noninteractive.fg_stroke.color = self.theme.browser_folder_text;
                             ui.visuals_mut().widgets.hovered.fg_stroke.color = self.theme.browser_folder_hover_text;
                             ui.style_mut().spacing.item_spacing.x = 4.;
-                            for entry in entries.into_iter().skip(row_range.start).take(row_range.len()) {
-                                self.add_entry(entry, ui);
+                            let entries_iter = entries.into_iter();
+                            for entry in entries_iter.skip(row_range.start).take(row_range.len()+8) {
+                                self.add_entry(entry, ui, browser_width);
                             }
                         })
                     })
@@ -389,10 +389,7 @@ impl Browser {
             Poll::Ready(list) => {
                 for (kind, entry) in list.clone() {
                     entries.push(Entry {
-                        data: Poll::Ready(EntryData {
-                            path: Arc::from(Path::new("")),
-                            kind,
-                        }),
+                        data: Poll::Ready(EntryData { path: Arc::from(Path::new("")), kind }),
                         depth,
                     });
                     let len = entries.len();
@@ -419,7 +416,7 @@ impl Browser {
         }
     }
 
-    fn add_entry(&mut self, Entry { data, depth }: Entry, ui: &mut Ui) -> Response {
+    fn add_entry(&mut self, Entry { data, depth }: Entry, ui: &mut Ui, browser_width: f32) -> Response {
         const INDENT_SIZE: f32 = 16.;
         let Poll::Ready(EntryData { path, kind }) = data else {
             return ui
@@ -437,8 +434,26 @@ impl Browser {
             return ui.allocate_response(vec2(0.0, Self::ENTRY_HEIGHT), Sense::hover());
         }
         let name = path.file_name().map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
+        let full_width = ui.painter().layout(name.to_string(), FontId::proportional(12.), Color32::WHITE, f32::INFINITY).size().x;
+        let char_length = name.to_string().len();
+        let mut final_char_length = char_length;
+        let mut final_text = name.to_string();
+        let available_width = browser_width - 30. - (INDENT_SIZE * depth as f32);
+        if full_width > available_width {
+            for i in char_length..0 {
+                let string = name.to_string();
+                let text = string.unicode_truncate(i).0;
+                let width = ui.painter().layout(text.to_string(), FontId::proportional(12.), Color32::WHITE, f32::INFINITY).size().x;
+                if width <= available_width {
+                    final_char_length = i;
+                    break;
+                }
+            }
+            // final_text = format!("{}{}", final_text.unicode_truncate(usize::max(final_char_length, 3)-3).0, "...");
+            final_text = final_text.unicode_truncate(final_char_length).0.to_string();
+        }
         let button = |theme: &ThemeColors| -> Button<'static> {
-            Button::new(RichText::new(name.to_string()).pipe(|text| {
+            Button::new(RichText::new(final_text.clone()).font(FontId::proportional(12.)).pipe(|text| {
                 if matches!(&name, &Cow::Owned(_)) {
                     text.color(theme.browser_unselected_button_fg_invalid)
                 } else {
@@ -541,6 +556,7 @@ impl Browser {
 impl Widget for &mut Browser {
     fn ui(self, ui: &mut Ui) -> Response {
         ui.add_space(6.);
+        let browser_width = ui.available_width();
         ui.vertical(|ui| {
             ui.visuals_mut().button_frame = false;
             ui.visuals_mut().interact_cursor = Some(CursorIcon::PointingHand);
@@ -563,11 +579,18 @@ impl Widget for &mut Browser {
                 })
             });
             ui.add_space(4.);
-            let scroll_area = ScrollArea::both().drag_to_scroll(false).auto_shrink(false);
+            ui.visuals_mut().extreme_bg_color = Color32::from_hex("#7676a340").unwrap();
+            // ui.style_mut().spacing.scroll.floating = false;
+            let scroll_area = ScrollArea::both()
+                .drag_to_scroll(false)
+                .auto_shrink(false)
+                // .hscroll(false)
+                .max_width(ui.available_width() - 6.)
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded);
             egui::Frame::default()
                 .show(ui, |ui| {
                     match self.selected_category {
-                        Category::Files => self.add_files(ui, scroll_area),
+                        Category::Files => self.add_files(ui, scroll_area, browser_width),
                         Category::Devices => {
                             // TODO: Show some devices here!
                             ui.label("Devices")

@@ -5,7 +5,7 @@ use std::{
 };
 
 use eframe::{egui, run_native, App, CreationContext, NativeOptions};
-use egui::{hex_color, vec2, CentralPanel, Context, FontData, FontDefinitions, FontFamily, FontId, IconData, RichText, Shadow, SidePanel, TextStyle, TopBottomPanel, ViewportBuilder};
+use egui::{hex_color, vec2, CentralPanel, Context, FontData, FontDefinitions, FontFamily, FontId, IconData, Margin, RichText, Rounding, Shadow, SidePanel, TextStyle, TopBottomPanel, Vec2, ViewportBuilder};
 use egui_extras::install_image_loaders;
 use human_panic::setup_panic;
 use image::{ImageFormat, ImageReader};
@@ -16,7 +16,7 @@ mod visual;
 mod timings;
 
 use tap::{Pipe, Tap};
-use visual::{browser::Browser, central::Central, navbar::navbar, notification::NotificationDrawer, ThemeColors};
+use visual::{browser::Browser, central::Central, navbar::navbar, notification::NotificationDrawer, status::status, ThemeColors};
 
 fn main() -> eframe::Result {
     setup_panic!();
@@ -58,19 +58,26 @@ struct VoltApp {
     pub command_palette_cursor_pos: u32,
     pub command_palette_cursor_pos_end: u32,
     pub command_palette_begin: Duration,
-    pub timings_toggle: bool
+    pub timings_toggle: bool,
+    pub show_welcome: bool,
+    pub show_about: bool
 }
 
 impl VoltApp {
     fn new(cc: &CreationContext<'_>) -> Self {
-        const FONT_NAME: &str = "IBMPlexMono";
+        const MONO_FONT_NAME: &str = "IBMPlexMono";
+        const PROP_FONT_NAME: &str = "Inter";
         install_image_loaders(&cc.egui_ctx);
         cc.egui_ctx.set_fonts({
             let mut fonts = FontDefinitions::default();
             fonts
                 .font_data
-                .insert(FONT_NAME.to_string(), FontData::from_static(include_bytes!("fonts/ibm-plex-mono/IBMPlexMono-Regular.ttf")).into());
-            fonts.families.insert(FontFamily::Proportional, vec![FONT_NAME.to_string()]);
+                .insert(MONO_FONT_NAME.to_string(), FontData::from_static(include_bytes!("fonts/ibm-plex-mono/IBMPlexMono-Regular.ttf")).into());
+            fonts.families.insert(FontFamily::Monospace, vec![MONO_FONT_NAME.to_string()]);
+            fonts
+                .font_data
+                .insert(PROP_FONT_NAME.to_string(), FontData::from_static(include_bytes!("fonts/inter/Inter.ttf")).into());
+            fonts.families.insert(FontFamily::Proportional, vec![PROP_FONT_NAME.to_string()]);
             fonts
         });
         cc.egui_ctx.all_styles_mut(|style| {
@@ -98,7 +105,9 @@ impl VoltApp {
             command_palette_begin: Duration::default(),
             command_palette_cursor_pos: 0,
             command_palette_cursor_pos_end: 0,
-            timings_toggle: false
+            timings_toggle: false,
+            show_welcome: true,
+            show_about: false
         }
     }
 }
@@ -423,13 +432,48 @@ impl App for VoltApp {
             }
         }
 
-        TopBottomPanel::top("navbar").frame(egui::Frame::default()).show(ctx, |ui| {
+        egui::Area::new("center_area".into())
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                if self.show_welcome {
+                    egui::Frame::none()
+                        .fill(self.theme.central_background)
+                        .stroke(egui::Stroke::new(1., self.theme.playlist_bar))
+                        .rounding(Rounding::ZERO.at_least(5.))
+                        .inner_margin(Margin::same(10.))
+                        .show(ui, |ui| {
+                            ui.label("Welcome to Volt!");
+                            ui.label("This is extremely work-in-progress and is not finished at all!");
+                            ui.label("If you can, please check out our GitHub repository:");
+                            ui.hyperlink_to("github.com/TheRedXD/Volt", "https://github.com/TheRedXD/Volt");
+                            ui.style_mut().spacing.item_spacing = Vec2::ZERO;
+                            let mut margin = Margin::ZERO;
+                            margin.top = 5.;
+                            egui::Frame::none()
+                                .inner_margin(margin)
+                                .show(ui, |ui| {
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        let close_btn = egui::Button::new("Ok")
+                                            .fill(self.theme.command_palette)
+                                            .stroke(
+                                                egui::Stroke::new(1., self.theme.playlist_bar)
+                                            );
+                                        if ui.add(close_btn).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                                            self.show_welcome = false
+                                        }
+                                    });
+                                });
+                        });
+                }
+            });
+
+        TopBottomPanel::top("navbar").frame(egui::Frame::default()).show_separator_line(false).show(ctx, |ui| {
             ui.add(navbar(&self.theme));
         });
-        TopBottomPanel::bottom("status").frame(egui::Frame::default()).show(ctx, |ui| {
-            ui.label("bagel");
+        TopBottomPanel::bottom("status").frame(egui::Frame::default()).show_separator_line(false).show(ctx, |ui| {
+            ui.add(status(&self.theme));
         });
-        SidePanel::left("browser").default_width(300.).frame(egui::Frame::default().fill(self.theme.browser)).show(ctx, |ui| {
+        SidePanel::left("browser").default_width(300.).frame(egui::Frame::default().fill(self.theme.browser)).show_separator_line(false).show(ctx, |ui| {
             ui.add(&mut self.browser);
         });
         CentralPanel::default().frame(egui::Frame::default().fill(self.theme.central_background)).show(ctx, |ui| {
